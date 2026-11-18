@@ -1,0 +1,9 @@
+Pixel_Fold_API_36 input compatibility check (2026-11-08)
+Folded screenshot and active Android viewport: 1080x2092, rotation 0, crop offsets 0.
+Main panel: 2208x1840.
+Live UI center click near (540,1046) captured EV_ABS coordinates (7983,18609).
+Isolated gRPC probe at exact (540,1046), explicitly setting TouchEvent display=1, captured (8013,18627).
+Expected secondary-screen normalization is about (16383,16383).
+Observed exact-probe values instead match 540/2208*32767 and 1046/1840*32767.
+No guessed transform is shipped. Folded gestures use Android adb logical-coordinate input; unfolded gestures keep persistent gRPC.
+Read-only capture ended and probe touch was released. No display/security settings changed by these probes.

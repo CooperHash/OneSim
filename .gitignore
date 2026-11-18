@@ -1,0 +1,14 @@
+.build/
+build/
+.DS_Store
+
+# Local diagnostics and pre-change artifacts
+*.log
+docs/**/running-*.sample.txt
+docs/**/source-before.tar.gz
+docs/**/AndroidLab-before
+docs/**/Pixel_Fold_API_36-config-before.ini
+docs/**/fold-fix.patch
+docs/device-hub-emulator-window.png
+docs/device-hub-inspector.png
+docs/screenshot.png

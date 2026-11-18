@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Android robot head adapted from Google's Android brand asset:
+       https://developer.android.com/static/images/brand/android-head_flat.svg -->
+  <defs>
+    <linearGradient id="tile" x1="90" y1="130" x2="920" y2="880" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#142F2D"/>
+      <stop offset="0.55" stop-color="#14292E"/>
+      <stop offset="1" stop-color="#1B263A"/>
+    </linearGradient>
+    <linearGradient id="robot" x1="0" y1="0" x2="152" y2="89" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#63E99D"/>
+      <stop offset="1" stop-color="#36D67D"/>
+    </linearGradient>
+    <linearGradient id="apple" x1="520" y1="315" x2="860" y2="750" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFF"/>
+      <stop offset="0.55" stop-color="#D8E2F7"/>
+      <stop offset="1" stop-color="#98B7EA"/>
+    </linearGradient>
+    <linearGradient id="join" x1="380" y1="380" x2="780" y2="690" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4DE795" stop-opacity="0.48"/>
+      <stop offset="0.55" stop-color="#8AD9C7" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#9DBBFF" stop-opacity="0.44"/>
+    </linearGradient>
+    <clipPath id="androidSide">
+      <path d="M0 0H625C604 190 576 295 566 408C552 567 510 775 468 1024H0Z"/>
+    </clipPath>
+    <filter id="glow" x="-40%" y="-60%" width="180%" height="220%">
+      <feGaussianBlur stdDeviation="38"/>
+    </filter>
+  </defs>
+  <rect x="54" y="54" width="916" height="916" rx="210" fill="url(#tile)"/>
+  <rect x="68" y="68" width="888" height="888" rx="198" fill="none" stroke="#A2D9CD" stroke-opacity="0.18" stroke-width="4"/>
+  <path d="M218 804C323 648 425 475 568 284C640 190 757 207 851 289L874 775C738 891 457 910 218 804Z" fill="url(#join)" filter="url(#glow)" opacity="0.68"/>
+  <g clip-path="url(#androidSide)">
+  <g transform="translate(104 335) scale(4.6)">
+    <path fill="url(#robot)" d="M151.025 85.224q-.071-.464-.147-.92a75.665 75.665 0 0 0-7.546-22.597 76.5 76.5 0 0 0-5.511-8.995 76 76 0 0 0-8.322-9.808 76.034 76.034 0 0 0-13.398-10.626q.042-.074.085-.148 2.286-3.948 4.572-7.897l4.47-7.712a3946 3946 0 0 0 3.208-5.54q.38-.658.604-1.355a6.97 6.97 0 0 0-.652-5.702 6.9 6.9 0 0 0-2.406-2.398 7 7 0 0 0-2.954-.95 7 7 0 0 0-2.376.206 6.93 6.93 0 0 0-4.22 3.227q-1.606 2.77-3.208 5.54l-4.47 7.712c-1.523 2.634-3.05 5.263-4.573 7.897q-.25.43-.5.865c-.232-.092-.46-.184-.692-.272-8.398-3.205-17.511-4.958-27.036-4.958q-.39-.001-.78.004A75.7 75.7 0 0 0 50.977 25q-1.317.46-2.608.968-.234-.404-.467-.806-2.286-3.95-4.573-7.897l-4.47-7.713a4385 4385 0 0 1-3.208-5.54A6.93 6.93 0 0 0 29.055.58a6.9 6.9 0 0 0-2.954.95 6.92 6.92 0 0 0-3.157 4.185 6.96 6.96 0 0 0 .703 5.27l3.208 5.54 4.47 7.713c1.523 2.634 3.05 5.263 4.573 7.897.01.022.025.044.036.066a76.3 76.3 0 0 0-13.527 10.711 76.5 76.5 0 0 0-8.322 9.808 75.4 75.4 0 0 0-5.51 8.995 75.7 75.7 0 0 0-7.546 22.597 76.038 76.038 0 0 0-.581 4.247h151a77 77 0 0 0-.434-3.327z"/>
+    <path fill="#17352A" d="M115.225 67.663c3.022-2.012 3.461-6.668.981-10.4-2.48-3.73-6.939-5.123-9.96-3.11-3.021 2.012-3.46 6.668-.98 10.4 2.479 3.73 6.938 5.123 9.959 3.11M46.762 64.564c2.48-3.73 2.04-8.387-.98-10.4-3.022-2.012-7.481-.619-9.96 3.112s-2.041 8.387.98 10.4 7.48.62 9.96-3.112"/>
+  </g>
+  </g>
+  <path fill="url(#apple)" d="M670 400C627 385 602 397 571 406C536 417 515 398 479 406C429 417 405 460 405 520C405 594 448 682 505 726C534 748 554 730 585 719C620 706 648 706 683 721C716 736 736 741 762 721C800 691 829 644 840 599C807 578 785 541 787 505C789 469 810 444 835 432C797 394 744 379 704 392C692 396 682 399 670 400Z"/>
+  <path fill="url(#apple)" d="M656 377C659 337 689 300 724 283C747 272 766 272 779 275C776 309 757 341 730 358C705 374 678 380 656 377Z"/>
+  <path d="M566 406C554 435 539 477 534 524C522 612 530 686 549 733" fill="none" stroke="#BFF7DB" stroke-opacity="0.34" stroke-width="10" stroke-linecap="round"/>
+</svg>

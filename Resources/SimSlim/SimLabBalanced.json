@@ -1,0 +1,21 @@
+{
+  "name": "SimLab Balanced",
+  "description": "Reduce idle simulator memory while keeping push, Universal Links, StoreKit, Apple Account sign-in, photo selection, and system sharing available for app testing.",
+  "except": [
+    "store",
+    "web"
+  ],
+  "keep": [
+    "com.apple.searchd",
+    "com.apple.appleaccountd",
+    "com.apple.appleidsetupd",
+    "com.apple.akd",
+    "com.apple.cdpd",
+    "com.apple.sosd",
+    "com.apple.TrustedPeersHelper",
+    "com.apple.assetsd",
+    "com.apple.assetsd.nebulad",
+    "com.apple.medialibraryd",
+    "com.apple.mobileassetd"
+  ]
+}

@@ -1,0 +1,511 @@
+# simslim
+
+Run a lot more iOS, Apple TV (tvOS), Apple Watch (watchOS), and Apple Vision Pro (visionOS) simulators on one Mac by turning off the background daemons a simulator doesn't need.
+
+A freshly booted iOS simulator starts around 180 background services: Siri, Spotlight indexing, photo analysis, News, wallpaper posters, iCloud sync, and so on. None of it matters when you're using the simulator for development, testing, or CI. simslim switches those services off, which cuts each simulator's memory roughly 4x. On the same laptop you go from a handful of simulators to a screenful.
+
+https://github.com/user-attachments/assets/f4665e41-43b4-49cd-9388-3da533e9fd7b
+
+*12 slim simulators on a 16 GB M1 Pro, each driven by its own Claude Code agent through MobAI. Stock simulators start thrashing at around 5.*
+
+## Numbers
+
+One simulator, booted stock and then slimmed, same device and settle time (M1 Pro, 16 GB):
+
+| | Stock | Slim |
+|---|---|---|
+| Processes | 258 | 70 |
+| Memory | 4.0 GB | 0.9 GB |
+
+Memory here is phys_footprint, the figure Activity Monitor shows, which counts compressed and swapped pages. That's what decides how many simulators fit before the machine starts swapping. Run `simslim measure <udid>` to see it for any booted simulator.
+
+`status` and `measure` answer different questions. `status` counts only the
+allowlisted launchd labels SimSlim manages; it is not a live-process count. A
+slim boot still runs required core services plus system apps and extensions.
+`measure` walks every process under that simulator's `launchd_sim` and sums
+`phys_footprint`. A sum of `ps` RSS values is not comparable because RSS counts
+shared mappings once for every process that maps them.
+
+## Install
+
+```sh
+brew install mobai-app/tap/simslim
+```
+
+or
+
+```sh
+go install github.com/mobai-app/simslim/cmd/simslim@latest
+```
+
+macOS only, and you need Xcode with an iOS, tvOS, watchOS, or visionOS Simulator
+runtime, since simslim drives simulators through `xcrun simctl`.
+
+All four platforms use the same commands and service profiles. `list`, `top`,
+and the macOS app show each device's platform; JSON device records include
+`platform` (`iOS`, `tvOS`, `watchOS`, or `visionOS`) alongside the numeric
+`osVersion`. The existing memory figures and category estimates were measured on
+iOS; savings on Apple TV, Apple Watch, and Apple Vision Pro depend on their
+runtime and workload.
+The profile is an allowlist of disable overrides, so labels absent from a
+particular runtime do not represent running processes or additional savings.
+watchOS keeps `com.apple.homed` enabled because it re-enables the service after
+startup; profile verification and managed totals account for this exception.
+visionOS keeps `com.apple.mobileassetd` enabled: the simulated surroundings
+are mobile assets, and without it the simulator boots into a black space
+around the Home View, although apps still launch. A visionOS simulator stays
+expensive even when slim, because rendering its surroundings keeps
+`backboardd` busy.
+For Watch connectivity tests, keep `connectivity,messaging`; for HealthKit or
+fitness tests, also keep `health`, for example:
+
+```sh
+simslim on <watch-udid> --except connectivity,messaging,health
+```
+
+Use it in CI with [mobai-ci](https://github.com/MobAI-App/mobai-ci).
+
+## macOS app
+
+The SwiftUI app bundles the CLI and adds:
+
+- Searchable simulator status, disk-size, and live RAM columns.
+- Searchable service profiles with per-daemon controls and purpose summaries.
+- Read-only disk analysis plus confirmed cleanup of allowlisted data.
+- Clone, rename, erase, delete, and Finder shortcuts.
+
+Build it locally with Go and Xcode:
+
+```sh
+make app
+open build/SimSlim.app
+```
+
+Memory estimates are guidance rather than additive savings; see the
+[measurement method](docs/category-memory.md). SimSlim recommends cloning before
+service or disk changes so the copy can serve as a backup.
+
+## Usage
+
+```sh
+simslim list             # simulators and their slim status (--booted to filter)
+simslim profiles         # what a slim boot turns off
+simslim profiles <id>    # the launchd labels in one category
+simslim on <udid>        # slim a simulator and reboot it slim
+simslim on <udid> --no-reboot   # slim the current boot session, no reboot
+simslim off <udid>       # put it back to stock
+simslim enable <udid> icloud,photos   # turn services back on now, no reboot
+simslim disable <udid> icloud         # turn them off again now
+simslim status <udid>    # managed launchd-label state (not a process count)
+simslim verify <udid> --profile ci.json   # exact profile match; non-zero on drift
+simslim doctor <udid> --requires push,storekit,universal-links
+simslim measure <udid>   # a booted simulator's memory footprint
+simslim top              # live fleet monitor; enter a sim for per-daemon RAM/CPU
+simslim size <udid>      # total allocated simulator size
+simslim disk-plan <udid> # measure reclaimable data; read-only
+simslim disk-clean --categories caches,logs --confirm <udid>
+simslim clone <udid> <name>
+simslim repair-clone <source-udid> <clone-udid>
+simslim rename <udid> <name>
+simslim boot <udid>      # boot a simulator and wait for its services
+simslim shutdown <udid>  # shut down a booted simulator
+simslim erase <udid>     # erase apps, data, settings, and slimming overrides
+simslim delete <udid>    # permanently delete a simulator
+```
+
+Read-only and simulator-management commands, `enable`, and `disable` accept
+`--json` for integrations and the macOS app.
+
+Keep a category you actually need, like Spotlight search:
+
+```sh
+simslim on <udid> --except search
+```
+
+Or keep one specific daemon, like push notifications:
+
+```sh
+simslim on <udid> --keep com.apple.apsd
+```
+
+<details>
+<summary>All slimming categories</summary>
+
+| ID | Category | Turns off | ~MB |
+|---|---|---|---|
+| `widgets` | Widgets & Wallpaper | Home and lock screen posters, widgets, and Live Activities. | 675 |
+| `siri` | Siri & Intelligence | Siri, Apple Intelligence, speech, and on-device ML model services. | 265 |
+| `search` | Spotlight & Search | On-device Spotlight and in-Settings search services. | 50 |
+| `icloud` | iCloud & Apple Account | iCloud sync, Apple Account, keychain, and backup services. | 100 |
+| `store` | App Store, Push & Media | App Store, push notification, StoreKit, and media services. | 80 |
+| `pim` | Mail, Calendar & Contacts | Mail, Calendar, Contacts, Reminders, and related sync services. | 80 |
+| `web` | Safari Sync & Web Services | Safari sync, web push, privacy, and universal-link services. | 50 |
+| `family` | Family & Screen Time | Family Sharing, Screen Time, and usage tracking. | 65 |
+| `health` | Health, Home & Fitness | HealthKit, HomeKit, and Fitness services. | 135 |
+| `photos` | Photos & Media Analysis | Photos library, photo analysis, and media analysis services. | 60 |
+| `apps` | News, Weather, Maps & Games | News, Weather, Maps, Tips, and game services. | 90 |
+| `messaging` | Messaging & FaceTime | iMessage, FaceTime, call, and identity services. | 60 |
+| `connectivity` | Sharing & Device Connectivity | AirDrop, Continuity, CarPlay, Watch, and Find My services. | 65 |
+| `telemetry` | Ads, Diagnostics & Telemetry | DeviceCheck, ad privacy, analytics, diagnostics, and feedback services. | 105 |
+| `mdm` | Device Management | Declarative device management and managed asset services. | 10 |
+| `other` | Other Background Services | Wallet, App Clips, business services, assets, and miscellaneous background daemons. | 225 |
+
+Memory figures are iOS 26.5 clean-boot medians and are not additive; see the
+[measurement method](docs/category-memory.md). Run `simslim profiles <id>` to
+see the daemons in a category.
+
+</details>
+
+### Slow CI runners
+
+`simslim on` boots the simulator, disables ~175 daemons one `launchctl` call at a
+time, then reboots — all under a single 10-minute deadline. Shared CI runners (like
+GitHub-hosted macOS runners) are slower and less predictable, and can blow that
+deadline mid-reconfigure with `context deadline exceeded` errors. Raise it with the
+global `--boot-timeout` flag or the `SIMSLIM_BOOT_TIMEOUT` environment variable:
+
+```sh
+simslim on <udid> --boot-timeout 15m
+# or, for the whole job:
+export SIMSLIM_BOOT_TIMEOUT=15m
+```
+
+Each individual `launchctl` transition is also bounded by its own 2-minute
+timeout, and the first transitions after a cold boot can exceed that on slow
+hosts (failed ones are retried automatically). Raise it with the global
+`--spawn-timeout` flag or the `SIMSLIM_SPAWN_TIMEOUT` environment variable:
+
+```sh
+simslim on <udid> --spawn-timeout 5m
+# or, for the whole job:
+export SIMSLIM_SPAWN_TIMEOUT=5m
+```
+
+### Profile files
+
+For a repeatable setup, commit a JSON profile alongside your project and apply it
+per run. A `ci.json` and a `dev.json` can slim differently for each purpose:
+
+```json
+{
+  "name": "ci",
+  "description": "UI test runs",
+  "except": ["search", "store"],
+  "keep": ["com.apple.apsd"]
+}
+```
+
+```sh
+simslim on <udid> --profile ci.json
+```
+
+`except` and `keep` mirror the flags of the same name; `name` and `description`
+are for whoever reads the file. Unknown fields, unknown category IDs, and
+unmanaged labels are rejected, so a typo fails loudly. `--profile` is the single
+source of truth for its run and cannot be combined with `--except` or `--keep`.
+
+To build one interactively, run `simslim profile ci.json`: name it, then use the
+arrow keys and space to tick whole features to keep enabled, or press `→` to open
+a feature and keep individual daemons within it. Point it at a directory to save
+`<name>.json` there, or omit the path to print to stdout.
+
+### Checking a simulator with doctor
+
+Slimming a simulator turns features off on purpose, so a test suite that needs
+one of them wants a fast way to catch a mis-slimmed simulator before it runs.
+`doctor` checks a booted simulator against the features you name and exits
+non-zero if any of them are broken, which makes it a natural CI preflight:
+
+```sh
+simslim doctor <udid> --requires push,storekit,universal-links
+```
+
+```
+<udid>: 2/3 required features OK
+  ok     push
+  ok     universal-links
+  BROKEN storekit — com.apple.storekitd disabled
+```
+
+Feature IDs are finer-grained than the slimming categories: each maps to just
+the daemons that back one capability. Run `simslim doctor --list` to see them
+all. Both the check and the list support `--json`.
+
+### Verifying a profile still holds
+
+The disable overrides are per-simulator state that is easy to lose without
+noticing: a deleted-and-recreated device or a simulator from a new runtime
+comes up stock, and nothing else fails loudly when that happens — the simulator
+just quietly runs heavy again. `verify` compares a booted
+simulator's overrides against a profile — the same `--profile`/`--except`/`--keep`
+you passed to `on` — and exits non-zero listing the drift, so a script or CI
+step can catch it and re-run `simslim on` (idempotent: it only applies the
+missing delta) to repair:
+
+```sh
+simslim verify <udid> --profile ci.json || simslim on <udid> --profile ci.json
+```
+
+Where `doctor` answers "do the features my tests need still work?", `verify`
+answers "is this simulator in exactly the slim state I configured?". Supports
+`--json`.
+
+### Slimming without a reboot
+
+`simslim on --no-reboot` slims the running boot session in place: it disables
+each daemon and then boots it out of launchd, so the process stops now and
+cannot respawn, with no shutdown/boot cycle. It takes the same
+`--profile`/`--except`/`--keep` selection as `on`.
+
+Most daemons are stopped together: one `launchctl unload -w` with the job plists
+from the runtime writes the same disable override and removes the running job,
+so a busy host does not pay for two `launchctl` spawns per daemon. The result is
+read back, and any daemon still enabled or loaded is then disabled and booted out
+on its own.
+
+```sh
+simslim on <udid> --no-reboot --profile ci.json
+```
+
+On runtimes with persistent overrides this is simply the faster path; the
+disable overrides are stored as well, so the next boot comes up slim too.
+On older runtimes that cannot persist overrides, including iOS 17.x and 18.3,
+it is the only way to slim at all, and the state is
+gone at the next reboot: re-run it after every boot. `status` says so when it
+reads such a simulator, and `status --json` carries a `persistent` field.
+
+Live slimming only moves toward more-disabled. Managed daemons already disabled
+beyond the profile are left alone, because starting a daemon again live would
+need a per-label bootstrap; `simslim enable` turns them back on without a
+reboot, and `simslim off` restores them all with one.
+
+### Turning services back on without a reboot
+
+A slim simulator sometimes needs a feature back for a while: iCloud for a sync
+test, Photos for a picker. `enable` turns categories (IDs from
+`simslim profiles`) or individual managed daemons back on in the running
+simulator, with no reboot, and `disable` turns them off again.
+
+```sh
+simslim enable <udid> icloud,photos       # or: simslim enable <udid> icloud com.apple.apsd
+simslim doctor <udid> --requires icloud   # ok at once
+simslim disable <udid> icloud             # off again, still no reboot
+```
+
+`enable` lifts each disable override and loads the job into the current boot
+session. One `launchctl load -w` with the job plists from the runtime does most
+of them; any daemon still disabled then gets its own `launchctl enable`, and any
+still not loaded its own `launchctl bootstrap`. Everything is read back. A
+daemon launchd re-enables but will not load mid-session (iOS 27's
+`cloudsettingssyncagent`, for one) starts at the next boot, and the command
+says so and lists it (`notStarted` in `--json`). `disable` stops what you name
+the way `on --no-reboot` does, whatever the profile says, except a daemon the
+platform needs and, for a category, a daemon shared with another category that
+is fully enabled right now: `disable store` leaves the AMS daemons running while
+iCloud is on. A daemon you name on its own is always stopped. `disable` lists
+what it kept running (`stillEnabled` in `--json`).
+
+Like `on --no-reboot`, both act on the running boot session only and keep no
+state: the profile stays the one description of a slim simulator, so the next
+`on` or `watch` pass applies its profile again, and `verify` compares against
+the profile alone. They need a booted simulator. To go back to the profile
+without a reboot, run `simslim on <udid> --no-reboot --profile ci.json`.
+
+To make a change last, add `--save <profile.json>`: the command also adds the
+category to the file's `except` (a daemon to its `keep`), or removes it. A
+missing file is created from the default profile, the one `on` uses without
+`--profile`; entries keep their order and are never listed twice. Then `on`,
+`watch`, and `verify` with that profile agree with what you enabled. On a
+simulator that is not booted, `--save` only writes the file; apply it with
+`simslim on <udid> --profile <profile.json>`.
+
+```sh
+simslim enable <udid> icloud --save dev.json   # on now, and in dev.json
+simslim watch --profile dev.json               # keeps iCloud on at every boot
+```
+
+### Slimming every new simulator, from its first boot
+
+`simslim watch` keeps every simulator slim without a command per device. A
+simulator that is shut down, on a runtime that persists overrides (iOS/tvOS
+18.5, watchOS 11.5, visionOS 2.5 or newer), is slimmed before it boots: watch
+writes the profile's disable overrides into its launchd store, so its next boot
+starts none of those daemons. That includes a simulator's very first boot:
+watch follows the device-set directories with kqueue and seeds a new device from
+its own `device.plist` within milliseconds of `simctl create`, without waiting
+for `simctl list`. A boot that starts before the seed lands is slimmed as it
+boots instead, and comes up slim from its next boot. A script that creates and
+boots a simulator should not race watch: run
+`simslim on <udid> --preserve-boot-state` between `simctl create` and the boot,
+which slims the device and leaves it shut down.
+Watch only ever adds disables there, as it does after boot: a service disabled
+beyond the profile stays disabled until `simslim off`.
+
+This changes what watch does on startup: it now writes the slim profile into
+every shut-down simulator in the watched sets, not only the ones that boot while
+it runs. Run `simslim off <udid>` to bring one back to stock.
+
+Every simulator is also slimmed no-reboot the moment it boots, which reads the
+device back and covers whatever booted before watch could seed it. That is the
+only hook for `xcodebuild` parallel-testing clones: parallel testing creates a
+fresh clone per worker in its own device set, runs the tests, and deletes the
+clones when the run ends. The clones are created stock, and disable overrides do
+not survive `simctl clone`. A clone slimmed a few seconds into a multi-minute
+run keeps its freed memory for the rest of the run. A failed slim is retried on
+the next scan, and a device that shut down and booted again is slimmed again,
+because on older runtimes a no-reboot slim ends with the boot session.
+
+```sh
+simslim watch --except web,store &
+xcodebuild test -scheme App -parallel-testing-enabled YES -parallel-testing-worker-count 4 ...
+```
+
+It takes the same `--profile`/`--except`/`--keep` selection as `on`, and scans
+the default and `testing` sets plus any passed with `--set`. Point `--set` at a
+custom parallel-testing device set if your Xcode uses one. It runs until Ctrl-C.
+
+## Disk cleanup
+
+Disk cleanup is permanent and separate from service slimming. `disk-plan` is
+read-only. `disk-clean` shuts down the exact simulator, clears only allowlisted
+per-device directories, and refuses to run without `--confirm`.
+
+```sh
+simslim disk-categories
+simslim disk-plan <udid>
+simslim disk-clean --categories caches,logs,temporary --confirm <udid>
+# Optional: also remove on-demand language models
+simslim disk-clean --categories linguistic-data --confirm <udid>
+```
+
+Built-in apps and core OS language resources are part of a signed iOS runtime
+shared by every simulator using that version, so simslim never modifies them.
+Required Siri assets are measured only because iOS restores them on launch;
+on-demand language data is opt-in and may download again when needed.
+
+`disk-plan` also reports a read-only storage breakdown for installed app bundles,
+Documents, app data, and user media. Those durable rows are never eligible for
+cleanup. See the [disk cleanup safety model](docs/disk-cleanup.md) for recovery
+behavior, safeguards, and Xcode 26.6 validation results.
+
+## Use as a Go library
+
+The repo root is an importable package with no external dependencies, so you can
+drive simulators from your own tooling instead of shelling out to the CLI:
+
+```sh
+go get github.com/mobai-app/simslim
+```
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/mobai-app/simslim"
+)
+
+func main() {
+	ctx := context.Background()
+
+	devices, err := simslim.ListDevices(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	// Slim every booted simulator, keeping Siri and search enabled.
+	profile, err := simslim.BuildProfile("", "siri,search", "")
+	if err != nil {
+		panic(err)
+	}
+	for _, d := range devices {
+		if d.State != "Booted" {
+			continue
+		}
+		changed, err := simslim.EnableSlim(ctx, d.Set, d.UDID, profile, func(msg string) {
+			fmt.Println(d.UDID, msg)
+		})
+		fmt.Println(d.UDID, "changed:", changed, "err:", err)
+	}
+}
+```
+
+The package never writes to stdout — it returns values and reports progress
+through the `simslim.Reporter` callback you pass in. `simslim.Categories`,
+`simslim.Features`, and `simslim.SlimmableSet()` expose the same allowlist the
+CLI uses; `simslim.EnableServices`, `simslim.DisableServices`, and
+`simslim.SaveServices` back `enable`, `disable`, and `--save`. macOS only,
+since everything runs through `xcrun simctl`.
+
+## How it works
+
+`simslim on` writes persistent `launchctl disable` entries for the chosen launchd labels into the simulator's own launchd database, then reboots it. The entries stick across reboots, so the simulator comes up slim in a single boot from then on. `simslim off` clears them and reboots back to stock. Your Mac is never touched, only the simulator you point it at, and only services that are safe to disable. Core workflow services such as `sharingd`, plus the handful that wedge a simulator when turned off, are left running.
+
+Applying a profile normally costs no `launchctl` call at all: the overrides are written straight to the store `launchd_sim` reads when it starts, so the simulator simply boots slim the first time. On an iPhone 17 Pro / iOS 26.5 that turns a 2m14s first slim into 33s, nearly all of it the boot itself. A **booted** simulator takes the same route — an override only takes effect at the next boot, so the shutdown it already owed is spent up front, and slimming one measures 17s end to end. A profile that already matches costs a single read and no reboot at all. The booted simulator is still read back afterwards, and if a runtime ignores the store `simslim` falls back to running `launchctl` per daemon rather than report a slim simulator that isn't one. That fallback runs eight transitions at a time: 2m14s → 38s for 170 labels.
+
+The earliest runtime with verified persistence is iOS 18.5. iOS 17.x and 18.3
+accept each `launchctl disable`, but the simulator comes back stock after a
+reboot. The persistent-slimming version gate is iOS/tvOS 18.5, watchOS 11.5, or
+visionOS 2.5 and newer. The tvOS, watchOS, and visionOS cutoffs follow the
+corresponding iOS release generation; they are not independent measurements of
+the earliest persistent runtime. `simslim on` rejects older versions before booting or changing launchd
+state and points at `--no-reboot`, which slims the current boot session only
+(see [Slimming without a reboot](#slimming-without-a-reboot)). Every platform is
+read back after boot, and the command fails instead of claiming success if any
+requested override was lost. `off` remains available on older runtimes.
+
+This is per-simulator state, not a global setting. The daemon disables live in
+that one simulator's launchd database and nowhere else. `simslim clone` copies
+the source's exact SimSlim-managed profile along with its installed apps, app
+data, and settings. It also rebases simulator-local symlinks, regenerates app
+registration databases, and clears copied system caches and temporary files.
+Before finishing, it boots the clone and audits its running processes for open
+paths into the source. The clone finishes shutdown, and the source returns to
+the boot state it had before cloning.
+
+Clones created by an older SimSlim build can be repaired in place without
+deleting their installed apps or app data:
+
+```sh
+simslim repair-clone <source-udid> <clone-udid>
+```
+
+The repair preserves the clone's current SimSlim profile and boot state. The
+source is kept shutdown while copied paths are rebuilt; if direct links or open
+files into that source remain, the clone stays shutdown instead of being
+restarted. CoreSimulator does not expose clone lineage, so pass the exact source
+UDID: SimSlim verifies references to the source you specify.
+
+`erase`, `delete` and recreate, and "Erase All Content and Settings" still
+produce stock service state, so the simulator's memory climbs back until you
+rerun `simslim on`. A simulator created from a new or updated runtime also
+starts stock. The slim state persists across simulator shutdowns and reboots on
+the same Mac. Moving or restoring a simulator onto another Mac does not preserve
+the profile. Run `simslim list` to see current state, or `simslim verify` to
+check one against a specific profile.
+
+## What you lose
+
+Turning services off is fine for most development, UI automation, and CI, but some features genuinely stop working. The ones worth knowing:
+
+- Spotlight and in-Settings search return nothing (`search`).
+- Recents in the Files app and the document picker shows "Content Unavailable" without `searchd` (`search`).
+- Push notifications need `apsd`, StoreKit testing needs `storekitd` (`store`).
+- Universal links need `swcd` (`web`).
+- Declarative device management, and MDM or configuration-profile workflows that use it, need `mdm`.
+- App Clips need `clipserviced`, and accessibility asset downloads such as VoiceOver voices need `axassetsd` (`other`).
+- The Contacts, Photos, and Calendar pickers can act up without their categories.
+
+`simslim profiles` lists every category, so you can keep a category with `--except` or individual daemons with `--keep`.
+
+## Why
+
+Testing is shifting. Once agents are writing apps, you want agents running them too, and the place an iOS app runs is a simulator. One agent, one simulator. So how much work you get through at once comes down to how many simulators a machine can hold, and stock simulators are heavy enough that a laptop fills up fast. Slimming them is the cheapest way to raise that ceiling: more simulators on the box means more agents working in parallel on it.
+
+Built for [MobAI](https://mobai.run) to run more simulators on one machine.
+
+## License
+
+MIT, copyright Interlap.

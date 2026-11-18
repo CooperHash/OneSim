@@ -13,10 +13,12 @@ cleanup_staging() {
     rm -rf "$STAGING"
 }
 
-if pgrep -x SimLab >/dev/null 2>&1; then
-    echo "Quit SimLab before rebuilding its app bundle." >&2
-    exit 1
-fi
+for pid in $(pgrep -x SimLab || true); do
+    if [ "$(ps -p "$pid" -o comm=)" = "$PWD/$APP/Contents/MacOS/SimLab" ]; then
+        echo "Quit the copy of SimLab in build/ before rebuilding it." >&2
+        exit 1
+    fi
+done
 
 echo "Building ($CONFIG)…"
 swift build -c "$CONFIG" --product SimLab
@@ -37,7 +39,25 @@ cp Vendor/SimKit/HIDBridge/LICENSE "$STAGING/Contents/Resources/Licenses/SimKit/
 mkdir -p "$STAGING/Contents/Resources/SimSlim" "$STAGING/Contents/Resources/Licenses/SimSlim"
 cp Vendor/SimSlim/bin/simslim Resources/SimSlim/SimLabBalanced.json "$STAGING/Contents/Resources/SimSlim/"
 cp Vendor/SimSlim/LICENSE "$STAGING/Contents/Resources/Licenses/SimSlim/LICENSE"
-tools/bundle-sdk.sh "$STAGING/Contents/Resources/AndroidSDK"
+xcrun --sdk iphonesimulator clang -arch arm64 -mios-simulator-version-min=17.0 -O2 -fobjc-arc \
+    Resources/HingeControl/hinge_helper.m -o "$STAGING/Contents/Resources/HingeControl/hinge_helper" \
+    -framework IOKit -framework CoreFoundation -framework Foundation -framework CoreMotion
+codesign --force --sign - "$STAGING/Contents/Resources/HingeControl/hinge_helper"
+
+# Only embed Apple model art in a local build on request. The default app
+# reads the same resources directly from the installed Xcode and DeviceKit.
+if [ "${SIMLAB_EMBED_LOCAL_CHROME:-0}" = "1" ]; then
+    chrome="$STAGING/Contents/Resources/DeviceChrome"
+    mkdir -p "$chrome"
+    xcode_contents="$(xcode-select -p)/.."
+    cp "$xcode_contents/SharedFrameworks/DeviceKit.framework/Versions/A/PlugIns/CoreDevicePopDeviceKitExtension.devicekitplugin/Contents/Resources/V68.usdz" "$chrome/"
+    for id in 12 14 15; do
+        cp "/Library/Developer/DeviceKit/Chrome/phone${id}.devicechrome/Contents/Resources/PhoneComposite.pdf" "$chrome/phone${id}.pdf"
+    done
+fi
+if [ "${SIMLAB_BUNDLE_ANDROID_SDK:-0}" = "1" ]; then
+    tools/bundle-sdk.sh "$STAGING/Contents/Resources/AndroidSDK"
+fi
 
 cat > "$STAGING/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -79,7 +99,9 @@ cat > "$STAGING/Contents/Info.plist" <<'PLIST'
 PLIST
 
 codesign --force --deep --sign - "$STAGING"
-chmod -R a-w "$STAGING/Contents/Resources/AndroidSDK"
+if [ -d "$STAGING/Contents/Resources/AndroidSDK" ]; then
+    chmod -R a-w "$STAGING/Contents/Resources/AndroidSDK"
+fi
 codesign --verify --deep --strict "$STAGING"
 if [ -d "$APP/Contents/Resources/AndroidSDK" ]; then
     chmod -R u+w "$APP/Contents/Resources/AndroidSDK"

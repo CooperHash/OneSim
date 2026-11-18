@@ -114,6 +114,10 @@ json_string() {
 # Builds the in-simulator helper once per source and Xcode version.
 helper_path() {
   local key
+  if [[ -x "$SCRIPT_DIR/hinge_helper" ]]; then
+    printf '%s\n' "$SCRIPT_DIR/hinge_helper"
+    return
+  fi
   key="$( (cat "$HELPER_SRC"; xcode-select -p) | shasum | cut -c1-12)"
   local bin="$CACHE_DIR/hinge_helper-$key"
   if [[ ! -x "$bin" ]]; then

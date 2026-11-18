@@ -138,21 +138,11 @@ struct MultiSimWorkspaceView: View {
                 }
                 .help("Add a simulator to this workspace")
 
-                Button {
-                    model.startMultiSim(androidID: workspace.androidID)
-                } label: {
-                    Label("Start All", systemImage: "play.fill")
-                }
-                Button {
-                    model.stopMultiSim(androidID: workspace.androidID)
-                } label: {
-                    Label("Stop All", systemImage: "stop.fill")
-                }
+                WebMultiSimToolbar(web: model.web, workspace: workspace)
             }
         }
         .task(id: workspace.androidID) {
             focusedMemberID = workspace.members.first?.id
-            model.startMultiSim(androidID: workspace.androidID)
         }
         .task(id: workspace.members) {
             while !Task.isCancelled {
@@ -780,12 +770,18 @@ private struct IOSSimulatorColumn: View {
 
 /// The Simulator's own Duo chrome is installed with Xcode's DeviceKit. Refer to
 /// it in place instead of embedding a copied approximation in SimLab.
-private enum DuoChromeAssets {
+enum DuoChromeAssets {
     private static let root = "/Library/Developer/DeviceKit/Chrome"
-    static let iphone16Pro = NSImage(contentsOfFile:
-        "\(root)/phone12.devicechrome/Contents/Resources/PhoneComposite.pdf")
-    static let outer = NSImage(contentsOfFile:
-        "\(root)/phone15.devicechrome/Contents/Resources/PhoneComposite.pdf")
-    static let inner = NSImage(contentsOfFile:
-        "\(root)/phone14.devicechrome/Contents/Resources/PhoneComposite.pdf")
+
+    private static func load(_ id: Int) -> NSImage? {
+        if let url = Bundle.main.url(forResource: "phone\(id)", withExtension: "pdf", subdirectory: "DeviceChrome"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        return NSImage(contentsOfFile: "\(root)/phone\(id).devicechrome/Contents/Resources/PhoneComposite.pdf")
+    }
+
+    static let iphone16Pro = load(12)
+    static let outer = load(15)
+    static let inner = load(14)
 }

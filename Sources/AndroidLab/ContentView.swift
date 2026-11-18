@@ -23,6 +23,9 @@ struct ContentView: View {
             .background(Theme.background)
         }
         .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $model.showDependencySetup) {
+            DependencySetupView().environmentObject(model)
+        }
         .sheet(isPresented: $model.showCreate, onDismiss: {
             model.createDeviceForWorkspaceID = nil
         }) {

@@ -17,48 +17,26 @@ A native macOS app for running Android and iOS simulators in one window. It mana
 - Both iPhones have a **Rotate** button in MultiSim. SimLab sends a device orientation event, then rotates its fixed-size IOSurface, device frame, and touch coordinates together. The Duo inner panel's two portrait orientations use opposite framebuffer rotations so the guest's top remains above the home indicator. The device orientation is also refreshed when it changes outside SimLab.
 - Duo touch input uses each visible panel's screen ID (1 for the cover, 3 for the inner display in Xcode 27.1). An AppKit hit surface forwards visible screen coordinates to the active digitizer; the SceneKit flip model passes pointer events through to it.
 - Each iOS simulator has an optional **Memory** menu. **Reduce Background Services** applies a balanced [SimSlim](https://github.com/MobAI-App/simslim) profile to that device and restarts it; **Restore All Services** returns it to stock. The menu shows its measured process memory. The profile disables Siri, Spotlight indexing, photo analysis, iCloud sync, Mail/Calendar/Contacts background work, device connectivity, telemetry, and other optional services. It keeps push, StoreKit, Universal Links, Apple Account sign-in, photo selection, Files picker Recents, and system sharing available. SimLab never changes these services automatically.
-- Android AVDs use a reversible **Balanced** profile by default, including AVDs that already exist and ones created later. On boot, SimLab disables only installed optional system packages: Digital Wellbeing, device restore, Google app/Assistant, Pixel wallpapers, Settings search, YouTube Music, printer suggestions, and the basic screensaver. Google Play services and Store, WebView, notifications, accounts, networking, media selection, location, camera, input, accessibility, and installed test apps stay enabled. AVDs configured above 8 GB start with an 8 GB guest-RAM override when launched by SimLab; the underlying AVD setting is preserved. The Android resource menu switches between **Balanced** and **Standard** and restarts the emulator; Standard re-enables only packages SimLab previously disabled and uses the original RAM setting. The profile changes process usage, not the AVD's user-data disk image or shared system image.
+- Android **Balanced** mode caps guest RAM at 3 GB and 4 CPU cores, disables audio on SimLab launches, and disables optional guest packages. Use **Standard** for the original hardware settings, audio, and optional system services. The default Google APIs image includes Google Play Services and WebView.
 - Each running simulator shows its host CPU use, summed process-memory footprint, and process count. MultiSim samples the host process list once for all visible devices every five seconds; standalone Android windows show the same readings. CPU can exceed 100% when a simulator uses multiple cores.
 - The native top toolbar has zoom out / fit / zoom in. The vertical operations toolbar keeps rotate, fold / unfold (foldables), Back / Home / Recents, volume, power, type, APK, apps, screenshot, and stop.
 - The main window uses a Device Hub-inspired native workspace: searchable device sidebar, centered device preview, toolbar actions, and collapsible **Info / Session Log** inspectors. Colors follow the macOS appearance.
-- Includes the Android SDK tools and installed system images inside the macOS app bundle, and installs APKs through the bundled `adb`.
+- Downloads Android runtime dependencies on demand and installs APKs through `adb`.
 
-## Requirements
+## Setup and build
 
-- macOS 14 or newer (Apple Silicon recommended).
-- MultiSim requires Xcode and compatible installed iOS Simulator runtimes. iPhone Duo needs Xcode 27.1 and its iOS 27.1 runtime. SimLab reuses a matching existing simulator or creates one on first use; it does not bundle iOS runtimes.
-- Memory optimization uses the bundled arm64 SimSlim CLI. It changes only the selected simulator's background services; system runtimes, installed apps, and Android AVDs are unaffected. Apple features such as widgets, Siri, Spotlight, iCloud sync, Contacts, AirDrop, HealthKit, and FaceTime are unavailable until restored. The profile does not reduce the app's own memory or the Mac-side CoreSimulator rendering services. Actual memory savings depend on the runtime and workload.
-- A build made with `build.sh` includes `platform-tools`, `emulator`, `cmdline-tools`, and the locally installed **arm64-v8a** system images.
-- Enough free disk: an emulator needs roughly its data-partition size + 3–4 GB. The app refuses to create a device when free space is too low.
+Use an Apple silicon Mac with full Xcode and iPhone Duo support. Run Xcode once to finish its installation. The first launch checks the Android tools and image, CoreSimulator runtimes, the bundled SimSlim and hinge helpers, and DeviceKit art. The setup sheet downloads the official archives in parallel, verifies Google's published digests, and displays per-package progress. You can reopen it from **File → Set Up MultiSim…**. Allow several GB for the Android image and for the iOS runtime downloads reported by Xcode.
 
-The app uses its bundled SDK by default. AVD data stays in `~/.android/avd`. If you choose an external SDK in **SimLab → Android SDK…**, the app also supports fragmented layouts such as:
-
-```text
-sdk       = ~/Documents/cmdline-tools/bin
-emulator  = ~/Library/Android/sdk/emulator
-adb       = ~/Downloads/platform-tools
-avds      = ~/.android/avd
-```
-
-If auto-detection is wrong, open **SimLab → Android SDK…** and override every path individually.
-
-## Build
+For newly created iPhones, a runtime that supports both device types takes precedence. With Xcode 27.1 on this Mac, iOS 27.0 supports the iPhone 16 Pro and iOS 27.1 supports the Duo. Existing compatible simulators are reused.
 
 ```bash
-cd ~/Documents/app/AndroidLab
 ./build.sh release
 open build/SimLab.app
 ```
 
-The build uses Swift Package Manager and fetches SwiftNIO + swift-nio-http2 on the first run. `./build.sh debug` is faster for development. Packaging also copies the installed SDK from `~/Library/Android/sdk` into `Contents/Resources/AndroidSDK`, resolving the existing symlinks to the tools in Documents and Downloads. Set `ANDROIDLAB_SDK_SOURCE` to a different SDK root when building from another machine. The current two system images make the app about 6 GB.
+The standard build includes SimSlim and the precompiled simulator hinge helper. It reads DeviceKit art from the installed Xcode. For a personal offline build, set `SIMLAB_BUNDLE_ANDROID_SDK=1` to bundle adb, the ARM64 emulator, and the one Google APIs image from `ANDROIDLAB_SDK_SOURCE` (default `~/Library/Android/sdk`). Set `SIMLAB_EMBED_LOCAL_CHROME=1` to use a local copy of the model and bezel resources. These SDKs and Apple resources are supplied by their respective vendors and are outside this source repository.
 
-The build also bundles SimSlim v0.14.0 (MIT, source at `Vendor/SimSlim`, tagged commit `7e374b3`). Its official macOS arm64 release archive has SHA-256 `a3db0de6f428f9f8fd5dff256b122f98791c138521dc1330d99643719d8fe9ff`. The pinned binary and `Resources/SimSlim/SimLabBalanced.json` are copied into the app; no Go installation is needed to run or rebuild SimLab on this Mac.
-
-The bundled SDK is treated as read-only so the signed app stays intact. To add or update system images, install them in the source SDK and rebuild, or select a writable external SDK in Settings. SimLab does not redistribute SDK components as part of its source tree.
-
-The bundle mirrors the packages currently installed in the source SDK. That SDK does not yet have Android SDK Platforms or Build Tools, and SimLab does not currently compile APKs; it installs APKs produced by an Android project.
-
-The macOS app icon is built from `Resources/SimLabIcon.svg` ([preview](docs/simlab-icon.png)). After editing it, run `tools/make-icon.sh` to regenerate `Resources/SimLab.icns` before packaging.
+Use **SimLab → Android SDK…** to select a different SDK. SimLab can create AVDs without Java or command-line tools. An external `sdkmanager` and Java remain optional for installing additional system images through the image manager.
 
 ## Usage
 
@@ -74,11 +52,19 @@ The macOS app icon is built from `Resources/SimLabIcon.svg` ([preview](docs/siml
 4. Use the **Info** or **Session Log** toolbar buttons to show the inspector, and click the same button again or its close button to hide it. Search filters devices by name, Android version, and hardware profile without changing the current selection.
 5. **Device → Start / Stop Selected** is `⌘↩`. **Device → Cold Boot** is `⇧⌘↩`.
 
+### Default workspace and Web MultiSim
+
+Setup creates and selects an Android API 36 Google APIs AVD, iPhone 16 Pro, and iPhone Duo when there is no workspace. On its first boot, the managed Android AVD trims optional packages and saves a Quick Boot checkpoint locally. Subsequent Balanced boots load the checkpoint without overwriting it. Switch the target AVD to **Standard** to keep later guest changes across boots. The snapshot is generated on each host for its local emulator and image versions.
+
+**Start Web Service** boots the three devices in sequence, then serves their live displays at [http://127.0.0.1:8080](http://127.0.0.1:8080). Browser viewing is read-only. The native screens remain interactive. **Stop** closes the listener and streams. Simulator shutdown remains available from the native controls. The listener binds to loopback and accepts same-origin WebSocket viewers.
+
+Both iPhones apply the bundled SimSlim profile before boot if they are shut down. The profile keeps SpringBoard, HID input, networking, WebKit and sign-in services, while trimming optional background services such as search, Siri, photo analysis and iCloud sync. The Memory menu can restore Standard mode. Process memory depends on the OS, rendering, and the foreground app.
+
 ### Creating a device
 
 - Pick a hardware profile, a name (letters/numbers/dots/dashes/underscores), and an installed arm64 image.
 - RAM and storage are applied to `config.ini`; storage defaults to 4 GB for tight disks.
-- The app uses the modern `android emulator create` CLI when available, then renames the skeleton AVD and patches it. If that is unavailable it falls back to `avdmanager`.
+- SimLab writes the AVD configuration and launcher entry directly.
 
 ### System images
 
@@ -100,7 +86,7 @@ MultiSimWorkspaceView
  ├── Android DeviceWorkspaceView(s) (fixed-size canvases)
  └── SimKit SimulatorScreen(s) (CoreSimulator IOSurface → MTKView, HID input)
 AndroidRepository
- ├── sdkmanager / avdmanager / `android emulator create`
+ ├── direct AVD configuration and optional sdkmanager
  ├── emulator supervisor (free ports, `-grpc`, pid_*.ini discovery)
  └── adb toolbar keys/fallback input, packages, screenshots
 ```
@@ -152,25 +138,7 @@ The screen is an `NSView` inside the device frame. Press, drag and release event
 
 ### SDK layout
 
-The app bundle contains a standard SDK layout:
-
-```text
-<sdk>/
-├── cmdline-tools/latest/bin/{android,avdmanager,sdkmanager}
-├── platform-tools/adb
-├── emulator/emulator
-└── system-images/android-36/google_apis_playstore/arm64-v8a/
-```
-
-For building the app from a fragmented source SDK, symlinks can provide a standard source layout:
-
-```bash
-SDK="$HOME/Library/Android/sdk"
-mkdir -p "$SDK/cmdline-tools"
-ln -sfn "$HOME/Documents/cmdline-tools" "$SDK/cmdline-tools/latest"
-ln -sfn "$HOME/Documents/cmdline-tools/bin/system-images" "$SDK/system-images"
-ln -sfn "$HOME/Downloads/platform-tools" "$SDK/platform-tools"
-```
+The managed SDK contains adb, the ARM64 emulator, and `system-images/android-36/google_apis/arm64-v8a`. When a usable writable SDK is available, setup can install the missing default image there. AVD state stays under `~/.android/avd` unless configured otherwise.
 
 ## Limitations
 
@@ -200,10 +168,7 @@ Sources/AndroidLab/
 ├── AndroidRepository.swift  SDK/AVD/adb/emulator operations
 ├── ToolPaths.swift          SDK discovery
 └── Shell.swift              process runner
-Sources/Probe/                diagnostic gRPC frame grabber
 ```
-
-`swift run probe emulator-5554` connects to a running emulator's gRPC endpoint and saves `/tmp/probe-frame.png`; it is useful when debugging the frame path.
 
 ## Credits
 

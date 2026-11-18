@@ -18,8 +18,7 @@ struct ToolPaths: Codable, Equatable {
         let root = resources.appendingPathComponent("AndroidSDK").path
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: "\(root)/emulator/emulator"),
-              fm.isExecutableFile(atPath: "\(root)/platform-tools/adb"),
-              fm.isExecutableFile(atPath: "\(root)/cmdline-tools/latest/bin/avdmanager") else { return nil }
+              fm.isExecutableFile(atPath: "\(root)/platform-tools/adb") else { return nil }
         return root
     }
 
@@ -28,15 +27,15 @@ struct ToolPaths: Codable, Equatable {
         return (sdk as NSString).standardizingPath == (bundled as NSString).standardizingPath
     }
 
-    var androidCLI: String? {
-        let fm = FileManager.default
-        let candidates = [
-            "\(sdk)/cmdline-tools/latest/bin/android",
-            "\(sdk)/bin/android",
-            "\((avdmanager as NSString).deletingLastPathComponent)/android",
-            "/opt/homebrew/bin/android",
-        ]
-        return candidates.first { fm.isExecutableFile(atPath: $0) }
+    static var managedSDKRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/SimLab/AndroidSDK")
+    }
+
+    static func atSDK(_ root: String, avdHome: String) -> ToolPaths {
+        ToolPaths(sdk: root, adb: root + "/platform-tools/adb", emulator: root + "/emulator/emulator",
+                  avdmanager: root + "/cmdline-tools/latest/bin/avdmanager",
+                  sdkmanager: root + "/cmdline-tools/latest/bin/sdkmanager", avdHome: avdHome)
     }
 
     var isUsable: Bool {
@@ -48,8 +47,6 @@ struct ToolPaths: Codable, Equatable {
         var result: [String] = []
         if !FileManager.default.isExecutableFile(atPath: adb) { result.append("adb") }
         if !FileManager.default.isExecutableFile(atPath: emulator) { result.append("emulator") }
-        if !FileManager.default.isExecutableFile(atPath: avdmanager) { result.append("avdmanager") }
-        if !FileManager.default.isExecutableFile(atPath: sdkmanager) { result.append("sdkmanager") }
         return result
     }
 
@@ -62,13 +59,16 @@ struct ToolPaths: Codable, Equatable {
         if !avdHome.isEmpty {
             env["ANDROID_AVD_HOME"] = avdHome
         }
-        if let java = ToolPaths.javaHome {
-            env["JAVA_HOME"] = java
-        }
         return env
     }
 
-    static var javaHome: String? {
+    var legacySDKManagerEnvironment: [String: String] {
+        var values = environment
+        if let java = Self.javaHome { values["JAVA_HOME"] = java }
+        return values
+    }
+
+    private static var javaHome: String? {
         if let result = try? Shell.runSync("/usr/libexec/java_home", []), result.ok {
             let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             if !path.isEmpty { return path }
@@ -86,6 +86,9 @@ struct ToolPaths: Codable, Equatable {
         let home = fm.homeDirectoryForCurrentUser.path
         let env = ProcessInfo.processInfo.environment
 
+        let avdHome = env["ANDROID_AVD_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(home)/.android/avd"
+        let managed = atSDK(managedSDKRoot.path, avdHome: avdHome)
+        if managed.isUsable { return managed }
         if let sdk = bundledSDKRoot {
             return ToolPaths(
                 sdk: sdk,
@@ -154,13 +157,6 @@ struct ToolPaths: Codable, Equatable {
             "\(home)/Documents/cmdline-tools/latest/bin/sdkmanager",
             "/opt/homebrew/bin/sdkmanager",
         ]) ?? Shell.which("sdkmanager") ?? ""
-
-        let avdHome: String
-        if let value = env["ANDROID_AVD_HOME"], !value.isEmpty {
-            avdHome = value
-        } else {
-            avdHome = "\(home)/.android/avd"
-        }
 
         if sdk.isEmpty, !emulator.isEmpty {
             sdk = ((emulator as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent

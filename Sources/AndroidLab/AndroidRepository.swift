@@ -239,85 +239,22 @@ enum AndroidRepository {
         }
         try fm.createDirectory(at: avdHome, withIntermediateDirectories: true)
 
-        var creationError = ""
-
-        // Prefer the modern `android emulator create` CLI. It produces a clean
-        // AVD skeleton and avoids avdmanager's Java/SDK-root quirks.
-        if let cli = paths.androidCLI {
-            for base in baseProfiles(for: profile) {
-                let baseDir = avdHome.appendingPathComponent("\(base).avd")
-                let baseIni = avdHome.appendingPathComponent("\(base).ini")
-                guard !fm.fileExists(atPath: baseDir.path),
-                      !fm.fileExists(atPath: baseIni.path) else { continue }
-                let maybeResult = try? await Shell.run(
-                    cli,
-                    ["--sdk=\(paths.sdk)", "emulator", "create", base],
-                    environment: paths.environment,
-                    timeout: 120
-                )
-                guard let result = maybeResult,
-                      result.combined.contains("Successfully created"),
-                      fm.fileExists(atPath: baseDir.appendingPathComponent("config.ini").path) else {
-                    creationError = maybeResult?.combined ?? creationError
-                    continue
-                }
-                do {
-                    try fm.moveItem(at: baseDir, to: avdDir)
-                    try fm.moveItem(at: baseIni, to: iniURL)
-                    Ini.patch(iniURL, values: [
-                        "path": avdDir.path,
-                        "path.rel": "avd/\(name).avd",
-                        "target": image.api,
-                        "avd.ini.displayname": name,
-                    ])
-                    return finishCreate(
-                        name: name, profile: profile, image: image,
-                        ramMB: ramMB, storageGB: storageGB,
-                        avdDir: avdDir, iniURL: iniURL, paths: paths
-                    )
-                } catch {
-                    creationError = error.localizedDescription
-                    try? fm.removeItem(at: baseDir)
-                    try? fm.removeItem(at: baseIni)
-                }
-            }
+        guard name.range(of: #"^[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil,
+              name != ".", name != ".." else {
+            throw AndroidLabError.message("Invalid emulator name.")
         }
-
-        // Fallback: avdmanager.
-        if !paths.avdmanager.isEmpty {
-            let result = try await Shell.run(
-                paths.avdmanager,
-                ["create", "avd", "-n", name, "-k", image.id, "-p", avdDir.path],
-                environment: paths.environment,
-                stdin: "no\n",
-                timeout: 90
+        guard listImages(paths: paths).contains(image) else {
+            throw AndroidLabError.message("The selected Android image is not installed.")
+        }
+        try fm.createDirectory(at: avdDir, withIntermediateDirectories: false)
+        do {
+            return try finishCreate(
+                name: name, profile: profile, image: image, ramMB: ramMB,
+                storageGB: storageGB, avdDir: avdDir, iniURL: iniURL
             )
-            if result.ok, fm.fileExists(atPath: avdDir.appendingPathComponent("config.ini").path) {
-                Ini.patch(iniURL, values: [
-                    "path": avdDir.path,
-                    "path.rel": "avd/\(name).avd",
-                    "target": image.api,
-                    "avd.ini.displayname": name,
-                ])
-                return finishCreate(
-                    name: name, profile: profile, image: image,
-                    ramMB: ramMB, storageGB: storageGB,
-                    avdDir: avdDir, iniURL: iniURL, paths: paths
-                )
-            }
-            creationError = result.combined
-        }
-
-        throw AndroidLabError.message(creationError.isEmpty ? "Could not create the emulator." : creationError)
-    }
-
-    private static func baseProfiles(for profile: DeviceProfile) -> [String] {
-        switch profile.category {
-        case "tablet": return ["medium_tablet", "small_phone", "medium_phone"]
-        case "tv": return ["medium_desktop", "small_desktop", "large_desktop"]
-        case "watch": return ["small_phone", "medium_phone"]
-        case "foldable": return ["medium_phone", "small_phone"]
-        default: return ["medium_phone", "small_phone"]
+        } catch {
+            try? fm.removeItem(at: avdDir)
+            throw error
         }
     }
 
@@ -328,9 +265,8 @@ enum AndroidRepository {
         ramMB: Int,
         storageGB: Int,
         avdDir: URL,
-        iniURL: URL,
-        paths: ToolPaths
-    ) -> AvdDevice {
+        iniURL: URL
+    ) throws -> AvdDevice {
         let imagePath = image.id
             .replacingOccurrences(of: "system-images;", with: "system-images/")
             .replacingOccurrences(of: ";", with: "/") + "/"
@@ -382,9 +318,9 @@ enum AndroidRepository {
             values["hw.keyboard"] = "no"
         }
         let configURL = avdDir.appendingPathComponent("config.ini")
-        Ini.patch(configURL, values: values)
-        Ini.remove(configURL, keys: ["skin.name", "skin.path"])
-        Ini.patch(iniURL, values: [
+        try Ini.write(configURL, values: values)
+        try Ini.write(iniURL, values: [
+            "avd.ini.encoding": "UTF-8",
             "path": avdDir.path,
             "path.rel": "avd/\(name).avd",
             "target": image.api,
@@ -420,14 +356,16 @@ enum AndroidRepository {
             "-no-boot-anim",
             "-no-snapshot-save",
         ]
-        let effectiveRAM = AndroidSlimClient.effectiveMemoryMB(
-            configuredMB: device.ramMB,
-            mode: AndroidSlimClient.mode(avdName: device.id, paths: paths)
-        )
+        let memoryMode = AndroidSlimClient.mode(avdName: device.id, paths: paths)
+        let effectiveRAM = AndroidSlimClient.effectiveMemoryMB(configuredMB: device.ramMB, mode: memoryMode)
+        if memoryMode == .balanced { arguments += ["-no-audio", "-cores", "4"] }
+        if device.id == AndroidSlimClient.defaultAVD && memoryMode == .standard {
+            arguments.append("-no-snapshot-load")
+        }
         if device.ramMB > effectiveRAM {
             arguments += ["-memory", "\(effectiveRAM)"]
         }
-        if coldBoot { arguments.append("-no-snapshot-load") }
+        if coldBoot && !arguments.contains("-no-snapshot-load") { arguments.append("-no-snapshot-load") }
         if wipeData { arguments.append("-wipe-data") }
 
         let logs = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/AndroidLab")
@@ -496,9 +434,6 @@ enum AndroidRepository {
     }
 
     static func delete(name: String, paths: ToolPaths) async throws {
-        if !paths.avdmanager.isEmpty {
-            _ = try? await Shell.run(paths.avdmanager, ["delete", "avd", "-n", name], environment: paths.environment, stdin: "yes\n", timeout: 30)
-        }
         let fm = FileManager.default
         let avdHome = URL(fileURLWithPath: paths.avdHome)
         if fm.fileExists(atPath: avdHome.appendingPathComponent("\(name).avd").path) {
@@ -642,7 +577,7 @@ enum AndroidRepository {
         let result = try await Shell.run(
             paths.sdkmanager,
             ["--sdk_root=\(paths.sdk)", "--install", image.id],
-            environment: paths.environment,
+            environment: paths.legacySDKManagerEnvironment,
             stdin: String(repeating: "y\n", count: 40),
             timeout: 1800
         )
@@ -658,7 +593,7 @@ enum AndroidRepository {
         let result = try await Shell.run(
             paths.sdkmanager,
             ["--sdk_root=\(paths.sdk)", "--licenses"],
-            environment: paths.environment,
+            environment: paths.legacySDKManagerEnvironment,
             stdin: String(repeating: "y\n", count: 80),
             timeout: 120
         )

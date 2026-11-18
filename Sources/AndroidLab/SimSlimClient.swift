@@ -50,7 +50,7 @@ enum SimSlimClient {
             .deletingLastPathComponent()
     }
 
-    private static func paths() throws -> (binary: String, profile: String) {
+    static func paths() throws -> (binary: String, profile: String) {
         let fileManager = FileManager.default
         if let directory = bundledDirectory {
             let binary = directory.appendingPathComponent("simslim").path

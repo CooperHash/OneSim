@@ -22,6 +22,7 @@ struct SimLabApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Device…") { model.showCreate = true }
                     .keyboardShortcut("n", modifiers: .command)
+                Button("Set Up MultiSim…") { Task { await model.checkDependencies() } }
                 Button("Refresh Devices") { Task { await model.refresh() } }
                     .keyboardShortcut("r", modifiers: .command)
             }

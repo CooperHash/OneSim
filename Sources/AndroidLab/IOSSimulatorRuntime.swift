@@ -159,6 +159,7 @@ final class IOSSimulatorRuntime: ObservableObject {
     private var pendingHingeRequest: HingeRequest?
     private var requestedDuoDisplay: DuoActiveDisplay = .inner
     private var confirmedDuoPanel: DuoPanelStatus?
+    var isDuoInnerPanelActive: Bool? { confirmedDuoPanel.map { $0.display == .inner } }
     private var lastCommandedHingeAngle = 180
     private var hasSyncedInitialDuoAngle = false
     private var rotationTask: Task<Void, Never>?
@@ -187,7 +188,19 @@ final class IOSSimulatorRuntime: ObservableObject {
                 let current = Self.deviceState(udid: deviceID, in: devices)
                 if current != "Booted" {
                     state = .booting
-                    try await Self.run(["boot", deviceID], timeout: 60)
+                    if UserDefaults.standard.object(forKey: kind.savedDeviceKey + ".standard") as? Bool != true {
+                        do {
+                            try await SimSlimClient.optimize(udid: deviceID)
+                            _ = await SimulatorControl.setLogVerbose(false, udid: deviceID)
+                        } catch {
+                            memoryError = error.localizedDescription
+                        }
+                    }
+                    guard !Task.isCancelled else { return }
+                    let afterProfile = try await Self.simctlJSON(["list", "-j", "devices"])
+                    if Self.deviceState(udid: deviceID, in: afterProfile) != "Booted" {
+                        try await Self.run(["boot", deviceID], timeout: 60)
+                    }
                 }
                 guard !Task.isCancelled else { return }
                 state = .booting
@@ -540,6 +553,7 @@ final class IOSSimulatorRuntime: ObservableObject {
                 } else {
                     try await SimSlimClient.restore(udid: udid)
                 }
+                UserDefaults.standard.set(!optimized, forKey: kind.savedDeviceKey + ".standard")
                 state = .running
                 let snapshot = try await SimSlimClient.snapshot(udid: udid)
                 guard self.udid == udid else { return }
@@ -565,7 +579,7 @@ final class IOSSimulatorRuntime: ObservableObject {
         try await Self.run(["launch", udid, "com.apple.springboard"], timeout: 30)
     }
 
-    private static func hingeScriptPath() -> String? {
+    static func hingeScriptPath() -> String? {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("HingeControl/hinge").path,
            FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
@@ -605,6 +619,28 @@ final class IOSSimulatorRuntime: ObservableObject {
         return IOSDeviceOrientation(rawValue: value)
     }
 
+    static func compatibleRuntimeIDs() async -> [IOSSimulatorKind: String] {
+        guard let runtimes = try? await simctlJSON(["list", "-j", "runtimes"]) else { return [:] }
+        let available = (runtimes["runtimes"] as? [[String: Any]] ?? [])
+            .filter { ($0["isAvailable"] as? Bool) == true }
+            .sorted {
+                ($0["version"] as? String ?? "").compare($1["version"] as? String ?? "", options: .numeric) == .orderedDescending
+            }
+        func supports(_ runtime: [String: Any], kind: IOSSimulatorKind) -> Bool {
+            let types = runtime["supportedDeviceTypes"] as? [[String: Any]] ?? []
+            return types.contains { $0["identifier"] as? String == kind.deviceTypeIdentifier }
+        }
+        let kinds = IOSSimulatorKind.allCases
+        if let common = available.first(where: { runtime in kinds.allSatisfy { supports(runtime, kind: $0) } }),
+           let id = common["identifier"] as? String {
+            return Dictionary(uniqueKeysWithValues: kinds.map { ($0, id) })
+        }
+        return Dictionary(uniqueKeysWithValues: kinds.compactMap { kind in
+            guard let id = available.first(where: { supports($0, kind: kind) })?["identifier"] as? String else { return nil }
+            return (kind, id)
+        })
+    }
+
     private static func findOrCreateDevice(kind: IOSSimulatorKind) async throws -> String {
         let devices = try await simctlJSON(["list", "-j", "devices"])
         if let saved = UserDefaults.standard.string(forKey: kind.savedDeviceKey),
@@ -615,18 +651,8 @@ final class IOSSimulatorRuntime: ObservableObject {
             UserDefaults.standard.set(found, forKey: kind.savedDeviceKey)
             return found
         }
-        let runtimes = try await simctlJSON(["list", "-j", "runtimes"])
-        let available = (runtimes["runtimes"] as? [[String: Any]] ?? [])
-            .filter { ($0["isAvailable"] as? Bool) == true }
-            .filter { runtime in
-                (runtime["supportedDeviceTypes"] as? [[String: Any]] ?? [])
-                    .contains { ($0["identifier"] as? String) == kind.deviceTypeIdentifier }
-            }
-            .sorted {
-                ($0["version"] as? String ?? "").compare($1["version"] as? String ?? "", options: .numeric) == .orderedDescending
-            }
-        guard let runtimeID = available.first?["identifier"] as? String else {
-            throw IOSSimulatorError.message("Install an iOS Simulator runtime supporting \(kind.name) in Xcode.")
+        guard let runtimeID = await compatibleRuntimeIDs()[kind] else {
+            throw IOSSimulatorError.message("Install an iOS Simulator runtime for \(kind.name) in Xcode.")
         }
         let result = try await Shell.run("/usr/bin/xcrun", [
             "simctl", "create", "SimLab \(kind.name)",

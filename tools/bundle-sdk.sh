@@ -1,67 +1,25 @@
 #!/bin/bash
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <destination-sdk-root>" >&2
-    exit 2
-fi
-
+# Optional self-contained build from an already installed Android SDK.
 SDK_SOURCE="${ANDROIDLAB_SDK_SOURCE:-$HOME/Library/Android/sdk}"
 DESTINATION="$1"
+IMAGE=system-images/android-36/google_apis/arm64-v8a
 
-source_directory() {
-    local path="$1"
-    if [ ! -d "$path" ]; then
-        echo "Missing Android SDK directory: $path" >&2
-        exit 1
-    fi
-    (cd "$path" && pwd -P)
-}
-
-copy_directory() {
-    local source="$1"
-    local destination="$2"
-    mkdir -p "$(dirname "$destination")"
-    # APFS clones keep the local app self-contained without immediately using
-    # another 6 GB of physical disk space.
-    cp -cR "$(source_directory "$source")" "$destination"
-}
-
-mkdir -p "$DESTINATION/cmdline-tools/latest/bin"
-copy_directory "$SDK_SOURCE/emulator" "$DESTINATION/emulator"
-copy_directory "$SDK_SOURCE/platform-tools" "$DESTINATION/platform-tools"
-copy_directory "$SDK_SOURCE/system-images" "$DESTINATION/system-images"
-
-CLI_SOURCE="$(source_directory "$SDK_SOURCE/cmdline-tools/latest")"
-copy_directory "$CLI_SOURCE/lib" "$DESTINATION/cmdline-tools/latest/lib"
-for file in "$CLI_SOURCE"/bin/*; do
-    if [ -f "$file" ] && [ ! -L "$file" ]; then
-        cp -cp "$file" "$DESTINATION/cmdline-tools/latest/bin/"
-    fi
-done
-for file in NOTICE.txt source.properties package.xml; do
-    if [ -f "$CLI_SOURCE/$file" ]; then
-        cp -cp "$CLI_SOURCE/$file" "$DESTINATION/cmdline-tools/latest/"
-    fi
-done
-if [ -d "$SDK_SOURCE/licenses" ]; then
-    copy_directory "$SDK_SOURCE/licenses" "$DESTINATION/licenses"
+test -x "$SDK_SOURCE/platform-tools/adb"
+test -x "$SDK_SOURCE/emulator/emulator"
+test -f "$SDK_SOURCE/$IMAGE/system.img"
+mkdir -p "$DESTINATION/platform-tools" "$DESTINATION/system-images/android-36/google_apis"
+cp -cp "$SDK_SOURCE/platform-tools/adb" "$DESTINATION/platform-tools/"
+if [ -f "$SDK_SOURCE/platform-tools/NOTICE.txt" ]; then
+    cp -p "$SDK_SOURCE/platform-tools/NOTICE.txt" "$DESTINATION/platform-tools/"
 fi
-
-for tool in \
-    emulator/emulator \
-    platform-tools/adb \
-    cmdline-tools/latest/bin/android \
-    cmdline-tools/latest/bin/avdmanager \
-    cmdline-tools/latest/bin/sdkmanager; do
-    if [ ! -x "$DESTINATION/$tool" ]; then
-        echo "Bundled SDK is missing executable: $tool" >&2
-        exit 1
+cp -cR "$(cd "$SDK_SOURCE/emulator" && pwd -P)" "$DESTINATION/emulator"
+cp -cR "$(cd "$SDK_SOURCE/$IMAGE" && pwd -P)" "$DESTINATION/$IMAGE"
+# Keep the official ARM emulator's runtime libraries, assets and license.
+for folder in qemu/darwin-x86_64 qemu/darwin-x64; do
+    if [ -d "$DESTINATION/emulator/$folder" ]; then
+        find "$DESTINATION/emulator/$folder" -depth -delete
     fi
 done
-if find "$DESTINATION" -type l -print -quit | grep -q .; then
-    echo "Bundled SDK contains a symlink; refusing a bundle that depends on external paths." >&2
-    exit 1
-fi
-
-echo "Bundled Android SDK ($(du -sh "$DESTINATION" | awk '{print $1}'))"
+echo "Bundled minimal Android SDK ($(du -sh "$DESTINATION" | awk '{print $1}'))"

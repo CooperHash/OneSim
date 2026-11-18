@@ -10,7 +10,11 @@ enum AndroidSlimMode: String, Codable {
 /// Per-AVD, reversible guest-service profile. Only packages that SimLab itself
 /// disabled are recorded and later re-enabled; apps and their data stay intact.
 enum AndroidSlimClient {
-    static let memoryLimitMB = 8_192
+    static let memoryLimitMB = 3_072
+    static let defaultAVD = "SimLab_Android"
+    static let defaultImage = SystemImage(id: "system-images;android-36;google_apis;arm64-v8a",
+                                          api: "android-36", tag: "google_apis", abi: "arm64-v8a")
+    private static let snapshotRevision = "v1"
 
     // Keep Google Play services, Store, WebView, notifications, account, media,
     // location, input, camera, accessibility, and all app-testing infrastructure.
@@ -22,6 +26,9 @@ enum AndroidSlimClient {
         "com.google.android.settings.intelligence",      // Settings search
         "com.google.android.apps.youtube.music",         // Preinstalled media app
         "com.google.android.printservice.recommendation", // Printer suggestions
+        "com.android.backupconfirm",                     // Backup confirmation UI
+        "com.android.printspooler",                       // Print spooler
+        "com.android.dreams.phototable",                  // Photo screensaver
         "com.android.dreams.basic",                       // Screensaver
     ]
 
@@ -36,6 +43,21 @@ enum AndroidSlimClient {
 
     static func effectiveMemoryMB(configuredMB: Int, mode: AndroidSlimMode) -> Int {
         mode == .balanced ? min(configuredMB, memoryLimitMB) : configuredMB
+    }
+
+    static func prepareDefaultSnapshot(device: AvdDevice, serial: String, paths: ToolPaths, wipe: Bool) async throws {
+        guard device.id == defaultAVD, mode(avdName: device.id, paths: paths) == .balanced else { return }
+        let directory = URL(fileURLWithPath: device.path)
+        let marker = directory.appendingPathComponent(".simlab-quickboot-" + snapshotRevision)
+        let snapshot = directory.appendingPathComponent("snapshots/default_boot")
+        let fm = FileManager.default
+        if !wipe && fm.fileExists(atPath: marker.path) && fm.fileExists(atPath: snapshot.path) { return }
+        let result = try await Shell.run(paths.adb, ["-s", serial, "emu", "avd", "snapshot", "save", "default_boot"],
+                                         environment: paths.environment, timeout: 90)
+        guard result.ok, result.stdout.split(whereSeparator: \.isNewline).contains("OK") else {
+            throw AndroidLabError.message("Could not save the trimmed Quick Boot snapshot. " + result.combined)
+        }
+        try Data().write(to: marker, options: .atomic)
     }
 
     static func setMode(_ mode: AndroidSlimMode, avdName: String, paths: ToolPaths) throws {

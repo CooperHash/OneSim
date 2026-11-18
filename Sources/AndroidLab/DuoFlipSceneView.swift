@@ -682,7 +682,10 @@ final class DuoFlipSceneView: SCNView {
         return nil
     }
 
-    private static func modelURL() -> URL? {
+    static func modelURL() -> URL? {
+        if let bundled = Bundle.main.url(forResource: "V68", withExtension: "usdz", subdirectory: "DeviceChrome") {
+            return bundled
+        }
         var roots = ["/Applications/Xcode.app/Contents"]
         if let developer = ProcessInfo.processInfo.environment["DEVELOPER_DIR"] {
             roots.insert(URL(fileURLWithPath: developer).deletingLastPathComponent().path, at: 0)

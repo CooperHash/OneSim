@@ -213,6 +213,9 @@ final class DeviceRuntime: ObservableObject {
                         serial: endpoint.serial, avdName: self.avdName, paths: paths)
                     self.slimAppliedPID = Int(running.process.processIdentifier)
                     self.appendLog("Android profile: \(self.slimmedPackages) optional packages disabled.")
+                    try await AndroidSlimClient.prepareDefaultSnapshot(
+                        device: device, serial: endpoint.serial, paths: paths, wipe: wipeData
+                    )
                 } catch {
                     self.slimError = error.localizedDescription
                     self.appendLog("Android profile: \(error.localizedDescription)")

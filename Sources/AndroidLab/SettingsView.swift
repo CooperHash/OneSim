@@ -15,7 +15,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Android SDK")
                         .font(.system(size: 18, weight: .semibold))
-                    Text("SimLab uses its bundled Android SDK by default. Per-tool overrides are supported.")
+                    Text("Use the setup assistant or choose an existing Android SDK. Command-line tools are optional.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }

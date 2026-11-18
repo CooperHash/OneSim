@@ -6,7 +6,6 @@
     "web"
   ],
   "keep": [
-    "com.apple.searchd",
     "com.apple.appleaccountd",
     "com.apple.appleidsetupd",
     "com.apple.akd",

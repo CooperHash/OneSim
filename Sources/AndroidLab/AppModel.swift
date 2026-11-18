@@ -29,6 +29,12 @@ final class AppModel: ObservableObject {
         ($0, IOSSimulatorRuntime(kind: $0))
     })
     @Published var createDeviceForWorkspaceID: String?
+    @Published var showDependencySetup = false
+    @Published private(set) var dependencyReport: DependencySetup.Report?
+    @Published private(set) var setupProgress: [String: Int64] = [:]
+    @Published private(set) var setupMessage = ""
+    @Published private(set) var isSettingUp = false
+    let web = WebMultiSimController()
 
     private var monitorTask: Task<Void, Never>?
     private var hasStarted = false
@@ -67,8 +73,100 @@ final class AppModel: ObservableObject {
         hasStarted = true
         Task {
             await refresh()
+            await checkDependencies()
             startMonitoring()
         }
+    }
+
+    func checkDependencies() async {
+        let bundleHelperReady = Bundle.main.bundleURL.pathExtension != "app" ||
+            Bundle.main.resourceURL.map {
+                FileManager.default.isExecutableFile(atPath: $0.appendingPathComponent("HingeControl/hinge_helper").path)
+            } == true
+        let resourcesReady = (try? SimSlimClient.paths()) != nil &&
+            (IOSSimulatorRuntime.hingeScriptPath() != nil || Bundle.main.bundleURL.pathExtension != "app") &&
+            bundleHelperReady && DuoFlipSceneView.modelURL() != nil &&
+            DuoChromeAssets.inner != nil && DuoChromeAssets.outer != nil && DuoChromeAssets.iphone16Pro != nil
+        let report = await DependencySetup.scan(paths: settings, resourcesReady: resourcesReady)
+        dependencyReport = report
+        if report.isReady {
+            showDependencySetup = false
+            do {
+                try await createDefaultWorkspaceIfNeeded()
+            } catch {
+                toast = error.localizedDescription
+            }
+        } else {
+            showDependencySetup = true
+        }
+    }
+
+    func installMissingDependencies() {
+        guard !isSettingUp, let report = dependencyReport, report.prerequisites.isEmpty else { return }
+        isSettingUp = true
+        setupProgress = [:]
+        setupMessage = "Preparing downloads…"
+        Task { [self] in
+            defer { isSettingUp = false }
+            do {
+                let current = settings
+                let fm = FileManager.default
+                let sdk = URL(fileURLWithPath: current.sdk)
+                let reuseSDK = current.isUsable && !current.isBundledSDK && fm.isWritableFile(atPath: sdk.path)
+                let root = reuseSDK ? sdk : ToolPaths.managedSDKRoot
+                let installed = ToolPaths.atSDK(root.path, avdHome: current.avdHome)
+                let pending = DependencySetup.packages.filter { !DependencySetup.hasPackage($0, paths: installed) }
+                dependencyReport?.android = pending
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for package in pending {
+                        group.addTask { [weak self] in
+                            try await DependencySetup.download(package, to: root) { [weak self] bytes, phase in
+                                Task { @MainActor [weak self] in
+                                    guard let self, isSettingUp else { return }
+                                    setupProgress[package.id] = max(setupProgress[package.id, default: 0], bytes)
+                                    setupMessage = phase
+                                }
+                            }
+                        }
+                    }
+                    try await group.waitForAll()
+                }
+                if !pending.isEmpty {
+                    settings = reuseSDK ? current : installed
+                    if let data = try? JSONEncoder().encode(settings) {
+                        UserDefaults.standard.set(data, forKey: "AndroidLab.toolPaths")
+                    }
+                }
+                for version in report.runtimeVersions {
+                    setupMessage = "Downloading and installing iOS \(version) Runtime with Xcode…"
+                    let result = try await Shell.run("/usr/bin/xcodebuild",
+                        ["-downloadPlatform", "iOS", "-buildVersion", version, "-architectureVariant", "arm64"],
+                        timeout: 7_200)
+                    guard result.ok else { throw SetupError(result.combined) }
+                }
+                await refresh()
+                await checkDependencies()
+            } catch {
+                setupMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func createDefaultWorkspaceIfNeeded() async throws {
+        guard multiSimWorkspaces.isEmpty else { return }
+        let name = AndroidSlimClient.defaultAVD
+        if !devices.contains(where: { $0.id == name }) {
+            guard let profile = Profiles.all.first(where: { $0.id == "pixel-10" }) else { return }
+            _ = try await AndroidRepository.create(
+                name: name, profile: profile, image: AndroidSlimClient.defaultImage,
+                ramMB: 3_072, storageGB: 4, paths: settings
+            )
+        }
+        while isRefreshing { try await Task.sleep(for: .milliseconds(100)) }
+        await refresh()
+        multiSimWorkspaces = [.initial(androidID: name)]
+        saveMultiSimWorkspaces()
+        selection = "multisim:\(name)"
     }
 
     deinit {
@@ -328,6 +426,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        web.stop()
         for runtime in runtimes.values {
             runtime.closeStreamForShutdown()
         }

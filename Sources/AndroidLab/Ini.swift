@@ -1,6 +1,11 @@
 import Foundation
 
 enum Ini {
+    static func write(_ url: URL, values: [String: String]) throws {
+        let text = values.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
+        try (text + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
     static func read(_ url: URL) -> [String: String] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
         var values: [String: String] = [:]

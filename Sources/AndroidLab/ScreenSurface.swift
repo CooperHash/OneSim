@@ -8,9 +8,11 @@ struct ScreenSurface: NSViewRepresentable {
     let onLongPress: (Int, Int) -> Void
     var onTouch: ((Int, Int, TouchPhase) -> Bool)? = nil
     var frameStore: ScreenFrameStore? = nil
+    @Environment(\.simulatorPreviewPaused) private var previewPaused
 
     func makeNSView(context: Context) -> ScreenNSView {
         let view = ScreenNSView()
+        view.previewPaused = previewPaused
         if let frameStore { frameStore.attach(view) } else { view.image = image }
         view.onTap = onTap
         view.onSwipe = onSwipe
@@ -20,6 +22,7 @@ struct ScreenSurface: NSViewRepresentable {
     }
 
     func updateNSView(_ view: ScreenNSView, context: Context) {
+        view.previewPaused = previewPaused
         if let frameStore { frameStore.attach(view) } else { view.image = image }
         view.onTap = onTap
         view.onSwipe = onSwipe
@@ -30,6 +33,7 @@ struct ScreenSurface: NSViewRepresentable {
 
 final class ScreenNSView: NSView {
     weak var frameStore: ScreenFrameStore?
+    var previewPaused = false
     var image: CGImage? {
         didSet {
             if image !== oldValue {

@@ -126,6 +126,10 @@ final class HIDInput: @unchecked Sendable {
 
   // MARK: - Input protocol
 
+  func prepareConnection() {
+    if ensureModern() == nil { _ = ensureWarm() }
+  }
+
   func tap(at point: Point, size: Size, duration: Double) -> Bool {
     if let modern = ensureModern() {
       let x = clamp01(point.x / size.width)

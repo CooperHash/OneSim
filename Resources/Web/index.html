@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web MultiSim</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body data-access="__ACCESS__" data-duo-model="__DUO_MODEL__">
+  <header>
+    <h1>Web MultiSim</h1>
+    <span id="status" role="status">Connecting…</span>
+  </header>
+  <form id="access" hidden>
+    <input id="code" type="password" aria-label="LAN access key" placeholder="LAN access key" autocomplete="off" required>
+    <button>Connect</button>
+  </form>
+  <nav id="devices" aria-label="Simulators"></nav>
+  <main id="workspace"></main>
+  <template id="device">
+    <section>
+      <div class="device-heading">
+        <span class="platform"></span>
+        <h2></h2>
+        <span class="detail"></span>
+      </div>
+      <div class="stage">
+        <p class="unavailable" hidden></p>
+        <div class="shell">
+          <canvas class="screen"></canvas>
+          <img class="chrome" alt="" hidden>
+        </div>
+      </div>
+      <nav class="controls" aria-label="Device controls"></nav>
+      <form class="typing">
+        <input aria-label="Text to type" placeholder="Type text" maxlength="80">
+        <button>Type</button>
+      </form>
+    </section>
+  </template>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

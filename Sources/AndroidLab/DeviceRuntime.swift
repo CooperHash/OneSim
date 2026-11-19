@@ -5,12 +5,14 @@ import Combine
 @MainActor
 final class ScreenFrameStore: ObservableObject {
     private(set) var image: CGImage?
+    private(set) var frameNumber: UInt64 = 0
     @Published private(set) var pixelSize: CGSize?
     private weak var surface: ScreenNSView?
 
     func present(_ image: CGImage?) {
         self.image = image
-        surface?.image = image
+        frameNumber &+= 1
+        if let surface, !surface.previewPaused { surface.image = image }
         let size = image.map { CGSize(width: $0.width, height: $0.height) }
         if pixelSize != size { pixelSize = size }
     }
@@ -19,7 +21,7 @@ final class ScreenFrameStore: ObservableObject {
         if view.frameStore !== self { view.frameStore?.detach(view) }
         surface = view
         view.frameStore = self
-        view.image = image
+        if !view.previewPaused { view.image = image }
     }
 
     func detach(_ view: ScreenNSView) {

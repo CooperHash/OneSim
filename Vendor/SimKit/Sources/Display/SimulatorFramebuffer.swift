@@ -34,6 +34,7 @@ final class SimulatorFramebuffer: @unchecked Sendable {
   private var descriptors: [NSObject] = []
   private var callbackUUIDs: [ObjectIdentifier: NSUUID] = [:]
   private var preferredInnerDisplay: Bool?
+  private var selectedSurface: IOSurfaceID?
   private var panelWakeDeadline: DispatchTime?
   private var panelWakeRetry: DispatchWorkItem?
 
@@ -52,6 +53,7 @@ final class SimulatorFramebuffer: @unchecked Sendable {
       guard let self else { return }
       if self.preferredInnerDisplay != preferInner {
         self.preferredInnerDisplay = preferInner
+        self.selectedSurface = nil
         self.panelWakeRetry?.cancel()
         self.panelWakeRetry = nil
         self.panelWakeDeadline = preferInner == nil ? nil : .now() + .seconds(2)
@@ -181,6 +183,14 @@ final class SimulatorFramebuffer: @unchecked Sendable {
       onFrame(surfaces[0])
       return
     }
+    // After a preferred panel has visibly woken, the runtime performs further
+    // selection. Avoid a memory lock on every ordinary frame for that panel.
+    if let selectedSurface,
+       let visible = surfaces.first(where: { IOSurfaceGetID($0) == selectedSurface }) {
+      onActiveSurface?(visible)
+      onFrame(visible)
+      return
+    }
     var preferredCandidate: IOSurface?
     var best: IOSurface?
     var bestActivity = -1
@@ -201,6 +211,7 @@ final class SimulatorFramebuffer: @unchecked Sendable {
       }
     }
     if let preferredCandidate {
+      selectedSurface = IOSurfaceGetID(preferredCandidate)
       panelWakeRetry?.cancel()
       panelWakeRetry = nil
       panelWakeDeadline = nil

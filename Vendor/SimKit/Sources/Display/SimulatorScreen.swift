@@ -7,6 +7,8 @@ import SwiftUI
 @MainActor
 public struct SimulatorScreen: NSViewRepresentable {
   public let deviceUDID: String
+  public var sharedFeed: SimulatorFrameFeed?
+  public var previewPaused: Bool
   public var interactionState: SimulatorInteractionState?
   public var showTouchIndicators: Bool
   public var allowsDirectHitTesting: Bool
@@ -19,6 +21,8 @@ public struct SimulatorScreen: NSViewRepresentable {
 
   public init(
     deviceUDID: String,
+    sharedFeed: SimulatorFrameFeed? = nil,
+    previewPaused: Bool = false,
     interactionState: SimulatorInteractionState? = nil,
     showTouchIndicators: Bool = true,
     allowsDirectHitTesting: Bool = true,
@@ -28,6 +32,8 @@ public struct SimulatorScreen: NSViewRepresentable {
     onAttached: (@MainActor (SimulatorScreenView) -> Void)? = nil
   ) {
     self.deviceUDID = deviceUDID
+    self.sharedFeed = sharedFeed
+    self.previewPaused = previewPaused
     self.interactionState = interactionState
     self.showTouchIndicators = showTouchIndicators
     self.allowsDirectHitTesting = allowsDirectHitTesting
@@ -58,6 +64,7 @@ public struct SimulatorScreen: NSViewRepresentable {
   }
 
   private func apply(to view: SimulatorScreenView) {
+    view.previewPaused = previewPaused
     view.interactionState = interactionState
     view.showTouchIndicators = showTouchIndicators
     view.allowsDirectHitTesting = allowsDirectHitTesting
@@ -67,7 +74,7 @@ public struct SimulatorScreen: NSViewRepresentable {
 
   private func attempt(attach view: SimulatorScreenView) {
     do {
-      try view.attach(deviceUDID: deviceUDID)
+      try view.attach(deviceUDID: deviceUDID, sharedFeed: sharedFeed)
     } catch let error as SimKitError {
       onError?(error)
     } catch {

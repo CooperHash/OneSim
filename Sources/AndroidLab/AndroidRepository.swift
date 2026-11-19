@@ -103,19 +103,13 @@ enum AndroidRepository {
     }
 
     static func listDevices(paths: ToolPaths) -> [AvdDevice] {
-        let fm = FileManager.default
-        let avdHome = URL(fileURLWithPath: paths.avdHome)
-        guard let files = try? fm.contentsOfDirectory(atPath: avdHome.path) else { return [] }
+        let configurations = avdConfigurations(paths: paths)
+        guard !configurations.isEmpty else { return [] }
         let endpoints = runningEndpoints()
         let adbSerials = (try? Shell.runSync(paths.adb, ["devices"], environment: paths.environment, timeout: 5))?.stdout ?? ""
 
         var devices: [AvdDevice] = []
-        for file in files where file.hasSuffix(".ini") {
-            let name = String(file.dropLast(4))
-            let iniURL = avdHome.appendingPathComponent(file)
-            let ini = Ini.read(iniURL)
-            let dir = URL(fileURLWithPath: ini["path"] ?? avdHome.appendingPathComponent("\(name).avd").path)
-            let config = Ini.read(dir.appendingPathComponent("config.ini"))
+        for (name, dir, config) in configurations {
             let imagePath = config["image.sysdir.1"] ?? ""
             let api = extractAPI(imagePath) ?? config["target"] ?? ""
             let width = Int(config["hw.lcd.width"] ?? "") ?? 1080
@@ -158,6 +152,55 @@ enum AndroidRepository {
         }
     }
 
+    private static func avdConfigurations(paths: ToolPaths) -> [(String, URL, [String: String])] {
+        guard !paths.avdHome.isEmpty else { return [] }
+        let home = URL(fileURLWithPath: paths.avdHome, isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? []
+        return files.filter { $0.hasSuffix(".ini") }.map { file in
+            let name = String(file.dropLast(4))
+            let ini = Ini.read(home.appendingPathComponent(file))
+            let directory = URL(fileURLWithPath: ini["path"] ?? home.appendingPathComponent("\(name).avd").path)
+            return (name, directory, Ini.read(directory.appendingPathComponent("config.ini")))
+        }
+    }
+
+    static func hasUsableARM64Device(paths: ToolPaths) -> Bool {
+        avdConfigurations(paths: paths).contains { _, _, config in
+            hasARM64BootImage(config, paths: paths)
+        }
+    }
+
+    static func preferredWorkspaceDevice(_ devices: [AvdDevice], paths: ToolPaths) -> AvdDevice? {
+        let usable = devices.filter { device in
+            let config = Ini.read(URL(fileURLWithPath: device.path).appendingPathComponent("config.ini"))
+            return hasARM64BootImage(config, paths: paths)
+        }
+        return usable.first { device in
+            !device.isFoldable && device.height > device.width && device.profile?.isTablet != true &&
+                device.profile?.isCircular != true
+        } ?? usable.first
+    }
+
+    private static func hasARM64BootImage(_ config: [String: String], paths: ToolPaths) -> Bool {
+        guard let path = config["image.sysdir.1"], !path.isEmpty else { return false }
+        let directory: URL
+        if path.hasPrefix("/") {
+            directory = URL(fileURLWithPath: path, isDirectory: true)
+        } else {
+            guard !paths.sdk.isEmpty else { return false }
+            directory = URL(fileURLWithPath: paths.sdk, isDirectory: true).appendingPathComponent(path)
+        }
+        return (config["abi.type"] ?? directory.lastPathComponent) == "arm64-v8a" && hasSystemImage(in: directory)
+    }
+
+    private static func hasSystemImage(in directory: URL) -> Bool {
+        let image = directory.appendingPathComponent("system.img")
+        var isDirectory: ObjCBool = false
+        let fm = FileManager.default
+        return fm.fileExists(atPath: image.path, isDirectory: &isDirectory) && !isDirectory.boolValue &&
+            fm.isReadableFile(atPath: image.path)
+    }
+
     static func listImages(paths: ToolPaths) -> [SystemImage] {
         let fm = FileManager.default
         guard !paths.sdk.isEmpty else { return [] }
@@ -173,10 +216,8 @@ enum AndroidRepository {
                     let tagDir = "\(apiDir)/\(tag)"
                     guard let abis = try? fm.contentsOfDirectory(atPath: tagDir) else { continue }
                     for abi in abis where abi == "arm64-v8a" || abi == "x86_64" {
-                        let abiDir = "\(tagDir)/\(abi)"
-                        let contents = (try? fm.contentsOfDirectory(atPath: abiDir)) ?? []
-                        let hasImage = contents.contains { $0.hasSuffix(".img") || $0 == "package.xml" }
-                        guard hasImage else { continue }
+                        let abiDir = URL(fileURLWithPath: "\(tagDir)/\(abi)", isDirectory: true)
+                        guard hasSystemImage(in: abiDir) else { continue }
                         let id = "system-images;\(api);\(tag);\(abi)"
                         guard seen.insert(id).inserted else { continue }
                         images.append(SystemImage(id: id, api: api, tag: tag, abi: abi))
@@ -354,6 +395,7 @@ enum AndroidRepository {
             "-grpc", "\(grpcPort)",
             "-grpc-use-token",
             "-no-boot-anim",
+            "-gpu", "host",
             "-no-snapshot-save",
         ]
         let memoryMode = AndroidSlimClient.mode(avdName: device.id, paths: paths)
@@ -466,11 +508,14 @@ enum AndroidRepository {
         guard text.canBeConverted(to: .ascii) else {
             throw AndroidLabError.message("The emulator input command only supports ASCII text. Use the on-screen keyboard for other languages.")
         }
-        let escaped = text
-            .replacingOccurrences(of: " ", with: "%s")
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-        _ = try await Shell.run(paths.adb, ["-s", serial, "shell", "input", "text", escaped], environment: paths.environment, timeout: 10)
+        // adb concatenates its shell arguments. Keep user text in one remote
+        // shell word, including quotes, dollar signs and other punctuation.
+        let encoded = text.replacingOccurrences(of: " ", with: "%s")
+        let quoted = "'" + encoded.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let result = try await Shell.run(
+            paths.adb, ["-s", serial, "shell", "input", "text", quoted], environment: paths.environment, timeout: 10
+        )
+        guard result.ok else { throw AndroidLabError.message(result.combined) }
     }
 
     static func foldState(serial: String, paths: ToolPaths) async throws -> FoldStateSnapshot {

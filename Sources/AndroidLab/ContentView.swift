@@ -12,7 +12,7 @@ struct ContentView: View {
             Group {
                 if let device = model.selectedDevice, let runtime = model.runtimes[device.id] {
                     if let workspace = model.selectedWorkspace {
-                        MultiSimWorkspaceView(workspace: workspace)
+                        MultiSimWorkspaceView(workspace: workspace, web: model.web)
                     } else {
                         DeviceManagerView(device: device, runtime: runtime)
                     }

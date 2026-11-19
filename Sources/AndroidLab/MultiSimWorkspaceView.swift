@@ -5,6 +5,10 @@ import SimKit
 /// A workspace of independently sized devices. Narrow windows scroll instead of scaling screens.
 struct MultiSimWorkspaceView: View {
     let workspace: MultiSimWorkspace
+    @ObservedObject var web: WebMultiSimController
+    @State private var windowVisible = true
+    private var previewVisible: Bool { windowVisible && !web.lanPowerSaving }
+
     @EnvironmentObject private var model: AppModel
     @State private var focusedMemberID: String?
     @StateObject private var resources = SimulatorResourceMonitor()
@@ -108,6 +112,8 @@ struct MultiSimWorkspaceView: View {
                 .background(Theme.stage)
             }
         }
+        .environment(\.simulatorPreviewPaused, !previewVisible)
+        .background(WindowPreviewVisibility(visible: $windowVisible))
         .navigationTitle("MultiSim")
         .navigationSubtitle("\(workspace.members.count) simulators · \(workspace.androidID)")
         .toolbar {
@@ -144,7 +150,8 @@ struct MultiSimWorkspaceView: View {
         .task(id: workspace.androidID) {
             focusedMemberID = workspace.members.first?.id
         }
-        .task(id: workspace.members) {
+        .task(id: previewVisible ? workspace.members : []) {
+            guard previewVisible else { return }
             while !Task.isCancelled {
                 await resources.refresh(activeResourceTargets)
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -221,7 +228,7 @@ struct MultiSimWorkspaceView: View {
             }
         case .ios(let kind):
             if let runtime = model.iosRuntimes[kind] {
-                IOSSimulatorColumn(kind: kind, runtime: runtime,
+                IOSSimulatorColumn(kind: kind, runtime: runtime, previewVisible: previewVisible,
                                    resourceUsage: resources.readings[member.id]) {
                     model.removeFromMultiSim(member, androidID: workspace.androidID)
                 }
@@ -252,6 +259,7 @@ struct MultiSimWorkspaceView: View {
 private struct IOSSimulatorColumn: View {
     let kind: IOSSimulatorKind
     @ObservedObject var runtime: IOSSimulatorRuntime
+    let previewVisible: Bool
     let resourceUsage: SimulatorResourceUsage?
     let onRemove: () -> Void
     @State private var screenError: String?
@@ -487,7 +495,7 @@ private struct IOSSimulatorColumn: View {
                     if runtime.is3DPoseActive {
                         Theme.stage.allowsHitTesting(false)
                     }
-                    DuoFlipCanvas(display: duoDisplay, visible: runtime.is3DPoseActive) { runtime.flipRenderer = $0 }
+                    DuoFlipCanvas(display: duoDisplay, visible: runtime.is3DPoseActive && previewVisible, paused: !previewVisible) { runtime.flipRenderer = $0 }
                         .frame(width: panelWidth, height: stageHeight)
                         .opacity(runtime.is3DPoseActive ? 1 : 0)
                         .allowsHitTesting(false)
@@ -650,6 +658,8 @@ private struct IOSSimulatorColumn: View {
     private func simulatorScreen(udid: String) -> some View {
         let screen = SimulatorScreen(
             deviceUDID: udid,
+            sharedFeed: try? runtime.frameFeed(),
+            previewPaused: !previewVisible,
             showTouchIndicators: false,
             allowsDirectHitTesting: kind != .iphoneDuo && screenQuarterTurns == 0,
             onImageSize: {

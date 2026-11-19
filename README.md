@@ -25,9 +25,9 @@ A native macOS app for running Android and iOS simulators in one window. It mana
 
 ## Setup and build
 
-Use an Apple silicon Mac with full Xcode and iPhone Duo support. Run Xcode once to finish its installation. The first launch checks the Android tools and image, CoreSimulator runtimes, the bundled SimSlim and hinge helpers, and DeviceKit art. The setup sheet downloads the official archives in parallel, verifies Google's published digests, and displays per-package progress. You can reopen it from **File → Set Up MultiSim…**. Allow several GB for the Android image and for the iOS runtime downloads reported by Xcode.
+Use an Apple silicon Mac. iPhone simulators require a full Xcode installation and a compatible simulator runtime. Run Xcode once to finish its installation, then install runtimes in **Xcode → Settings → Components**. SimLab uses the active Xcode and reuses available compatible simulators. For a new device, it uses a runtime that supports both iPhone models where available, then the newest compatible runtime for each model. Android can run while an iPhone model is unavailable.
 
-For newly created iPhones, a runtime that supports both device types takes precedence. With Xcode 27.1 on this Mac, iOS 27.0 supports the iPhone 16 Pro and iOS 27.1 supports the Duo. Existing compatible simulators are reused.
+The setup sheet downloads missing Android archives, verifies Google's published digests, and displays per-package progress. You can reopen it from **File → Set Up MultiSim…** to see guidance for unavailable iPhone models. Allow several GB for Android images and any runtimes you install through Xcode.
 
 ```bash
 ./build.sh release
@@ -54,9 +54,15 @@ Use **SimLab → Android SDK…** to select a different SDK. SimLab can create A
 
 ### Default workspace and Web MultiSim
 
-Setup creates and selects an Android API 36 Google APIs AVD, iPhone 16 Pro, and iPhone Duo when there is no workspace. On its first boot, the managed Android AVD trims optional packages and saves a Quick Boot checkpoint locally. Subsequent Balanced boots load the checkpoint without overwriting it. Switch the target AVD to **Standard** to keep later guest changes across boots. The snapshot is generated on each host for its local emulator and image versions.
+Setup creates and selects a workspace with Android, iPhone 16 Pro, and iPhone Duo when there is no workspace. It first reuses a compatible Android AVD, with preference for a regular phone. If it needs to create an AVD, it uses the installed API 36 Google APIs image first, then another installed ARM64 image such as Google Play. It offers to download the Google APIs image when no usable ARM64 image is available. On its first boot, the managed Android AVD trims optional packages and saves a Quick Boot checkpoint locally. Subsequent Balanced boots load the checkpoint without overwriting it. Switch the target AVD to **Standard** to keep later guest changes across boots. The snapshot is generated on each host for its local emulator and image versions.
 
-**Start Web Service** boots the three devices in sequence, then serves their live displays at [http://127.0.0.1:8080](http://127.0.0.1:8080). Browser viewing is read-only. The native screens remain interactive. **Stop** closes the listener and streams. Simulator shutdown remains available from the native controls. The listener binds to loopback and accepts same-origin WebSocket viewers.
+**Start Web Service** opens [http://127.0.0.1:8080](http://127.0.0.1:8080) once Android is ready. Compatible iPhones start in sequence in the background, and the page explains when an iPhone is unavailable. Click, tap, drag or scroll on a live display. Each device also has navigation and rotation buttons. Duo has a fold button, three presets, and an adjustable hinge slider. Use the text field to send printable ASCII to the focused input on the device.
+
+To connect from another device on the same network, choose **Share on LAN** in the SimLab header, select the Mac’s local IP address and enable access. Open **Copy LAN Link** on the other device. The link contains a session key that grants access to both the display and controls. LAN sharing uses HTTP on port 8080, so use it on a trusted network. **Stop Sharing** disconnects LAN clients. **Stop** closes both listeners and leaves the simulators available in the app.
+
+The stream adapts to activity. The service samples at up to 60 times per second while you interact or the hinge moves, and at 15 per second while idle. It sends changed frames and replays the last JPEG to new viewers. In a secure context with WebCodecs, the browser can use hardware-encoded H.264. Plain LAN HTTP uses JPEG drawn directly to Canvas. **LAN Power Saving** pauses local previews and resource polling while sharing. Those previews also pause automatically when the workspace is hidden or minimized.
+
+The app can render Xcode's official 2D shells and the animated V68 model entirely locally. For a local build with those assets, set `SIMLAB_EMBED_LOCAL_CHROME=1`. Set `SIMLAB_BLENDER_PYTHON` to a Python interpreter with Blender's `bpy` installed and provide `gltfpack` via `SIMLAB_GLTFPACK` or `PATH` to convert V68 during the build. The converted model stays in the ignored `build/` directory. Builds without local artwork use the Canvas previews and shell styles.
 
 Both iPhones apply the bundled SimSlim profile before boot if they are shut down. The profile keeps SpringBoard, HID input, networking, WebKit and sign-in services, while trimming optional background services such as search, Siri, photo analysis and iCloud sync. The Memory menu can restore Standard mode. Process memory depends on the OS, rendering, and the foreground app.
 

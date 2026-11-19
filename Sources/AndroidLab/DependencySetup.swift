@@ -25,33 +25,35 @@ struct DependencySetup {
 
     struct Report {
         var android: [Package]
-        var runtimeVersions: [String]
-        var prerequisites: [String]
-        var isReady: Bool { android.isEmpty && runtimeVersions.isEmpty && prerequisites.isEmpty }
+        let iosNotes: [String]
+        var platformError: String? {
+            #if arch(arm64)
+            nil
+            #else
+            "SimLab requires an Apple silicon Mac."
+            #endif
+        }
+        var isReady: Bool { android.isEmpty && platformError == nil }
     }
 
-    static func scan(paths: ToolPaths, resourcesReady: Bool) async -> Report {
-        let android = packages.filter { !hasPackage($0, paths: paths) }
-        let installed = await IOSSimulatorRuntime.compatibleRuntimeIDs()
+    static func scan(paths: ToolPaths) async -> Report {
+        let android = missingAndroidPackages(paths: paths)
         let xcode = try? await Shell.run("/usr/bin/xcrun", ["--find", "simctl"], timeout: 8)
         let firstLaunch = try? await Shell.run("/usr/bin/xcodebuild", ["-checkFirstLaunchStatus"], timeout: 8)
-        var missing: [String] = []
-        if xcode?.ok != true || firstLaunch?.ok != true {
-            missing.append("Full Xcode with iPhone Duo support. Open Xcode once to complete its first launch.")
-        } else if !resourcesReady && installed.count == IOSSimulatorKind.allCases.count {
-            missing.append("SimLab helpers or Xcode device art. Install the matching Xcode components and rebuild SimLab.app.")
+        guard xcode?.ok == true, firstLaunch?.ok == true else {
+            return Report(android: android, iosNotes: [
+                "For iPhone simulators, select a full Xcode installation and open Xcode once to finish setup."
+            ])
         }
-        #if !arch(arm64)
-        missing.append("Apple silicon is required by the Android ARM64 and Duo helpers.")
-        #endif
-        let missingVersions = IOSSimulatorKind.allCases.compactMap { kind -> String? in
-            if let id = installed[kind], let suffix = id.components(separatedBy: ".iOS-").last,
-               let major = suffix.split(separator: "-").first.flatMap({ Int($0) }), major >= 27 {
-                return nil
-            }
-            return kind == .iphoneDuo ? "27.1" : "27.0"
+        let installed = await IOSSimulatorRuntime.compatibleRuntimeIDs()
+        let notes = IOSSimulatorKind.allCases.compactMap { kind in
+            installed[kind] == nil ? IOSSimulatorRuntime.missingRuntimeMessage(for: kind) : nil
         }
-        return Report(android: android, runtimeVersions: missingVersions, prerequisites: missing)
+        return Report(android: android, iosNotes: notes)
+    }
+
+    static func missingAndroidPackages(paths: ToolPaths) -> [Package] {
+        packages.filter { !hasPackage($0, paths: paths) }
     }
 
     static func hasPackage(_ package: Package, paths: ToolPaths) -> Bool {
@@ -59,15 +61,21 @@ struct DependencySetup {
         switch package.id {
         case "platform-tools": return fm.isExecutableFile(atPath: paths.adb)
         case "emulator": return fm.isExecutableFile(atPath: paths.emulator)
-        default: return !paths.sdk.isEmpty && fm.fileExists(atPath: "(paths.sdk)/(package.id)/system.img")
+        default:
+            return AndroidRepository.listImages(paths: paths).contains { $0.abi == "arm64-v8a" } ||
+                AndroidRepository.hasUsableARM64Device(paths: paths)
         }
+    }
+
+    static func defaultAndroidImage(from images: [SystemImage]) -> SystemImage? {
+        images.first { $0 == AndroidSlimClient.defaultImage } ?? images.first { $0.abi == "arm64-v8a" }
     }
 
     static func download(_ package: Package, to root: URL,
                          progress: @escaping @Sendable (Int64, String) -> Void) async throws {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        let staging = root.appendingPathComponent(".install-(UUID().uuidString)", isDirectory: true)
+        let staging = root.appendingPathComponent(".install-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: false)
         defer { try? fm.removeItem(at: staging) }
 
@@ -197,7 +205,7 @@ struct DependencySetup {
         }
         let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
         guard count == package.bytes && digest == package.sha1 else {
-            throw SetupError("Integrity check failed for (package.name).")
+            throw SetupError("Integrity check failed for \(package.name).")
         }
     }
 

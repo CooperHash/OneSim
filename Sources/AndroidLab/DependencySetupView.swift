@@ -11,9 +11,10 @@ struct DependencySetupView: View {
             }
             VStack(alignment: .leading, spacing: 12) {
                 Text("Set up MultiSim").font(.title2.bold())
-                let count = report.android.count + report.runtimeVersions.count + report.prerequisites.count
-                Text("MultiSim needs \(count) more dependencies.")
-                ForEach(report.prerequisites, id: \.self) { Text($0).foregroundStyle(.secondary) }
+                if let error = report.platformError { Text(error).foregroundStyle(.secondary) }
+                if !report.android.isEmpty {
+                    Text("Android needs \(report.android.count) more dependencies.")
+                }
                 ForEach(report.android) { package in
                     VStack(alignment: .leading, spacing: 4) {
                         LabeledContent(package.name, value: format(package.bytes))
@@ -23,18 +24,13 @@ struct DependencySetupView: View {
                         }
                     }
                 }
-                ForEach(report.runtimeVersions, id: \.self) { version in
-                    LabeledContent("iOS \(version) Simulator Runtime", value: "Size reported by Xcode")
-                }
-                if model.isSettingUp {
-                    if total > 0 {
-                        ProgressView(value: Double(received), total: Double(total)) {
-                            Text("Android downloads")
-                        } currentValueLabel: {
-                            Text("\(Int(Double(received) / Double(total) * 100))% • \(format(received)) / \(format(total))")
-                        }
+                ForEach(report.iosNotes, id: \.self) { Text($0).foregroundStyle(.secondary) }
+                if model.isSettingUp && total > 0 {
+                    ProgressView(value: Double(received), total: Double(total)) {
+                        Text("Android downloads")
+                    } currentValueLabel: {
+                        Text("\(Int(Double(received) / Double(total) * 100))% • \(format(received)) / \(format(total))")
                     }
-                    if !report.runtimeVersions.isEmpty && received >= total { ProgressView() }
                 }
                 if !model.setupMessage.isEmpty {
                     Text(model.setupMessage)
@@ -48,14 +44,12 @@ struct DependencySetupView: View {
                     Link("Android SDK license terms", destination: URL(string: "https://developer.android.com/studio/terms")!)
                 }
                 HStack {
-                    if !report.prerequisites.isEmpty {
-                        Link("Get Xcode", destination: URL(string: "https://developer.apple.com/xcode/")!)
-                        Button("Check Again") { Task { await model.checkDependencies() } }
-                    }
-                    Spacer()
-                    Button("Later") { model.showDependencySetup = false }
+                    Button("Check Again") { Task { await model.checkDependencies(showIOSNotes: true) } }
                         .disabled(model.isSettingUp)
-                    if report.prerequisites.isEmpty {
+                    Spacer()
+                    Button(report.android.isEmpty ? "Done" : "Later") { model.showDependencySetup = false }
+                        .disabled(model.isSettingUp)
+                    if !report.android.isEmpty && report.platformError == nil {
                         Button("Download and Configure") { model.installMissingDependencies() }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isSettingUp)

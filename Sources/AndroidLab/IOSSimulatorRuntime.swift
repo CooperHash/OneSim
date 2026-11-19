@@ -142,6 +142,24 @@ final class IOSSimulatorRuntime: ObservableObject {
         didSet { pointerView?.screen = screenView }
     }
 
+    private var framebufferFeed: SimulatorFrameFeed?
+
+    func frameFeed() throws -> SimulatorFrameFeed {
+        guard let udid else { throw SimKitError.deviceNotFound(udid: kind.name) }
+        if let framebufferFeed, framebufferFeed.udid == udid { return framebufferFeed }
+        framebufferFeed?.stop()
+        let feed = try SimulatorFrameFeed(udid: udid)
+        if let isDuoInnerPanelActive { feed.preferInnerDisplay(isDuoInnerPanelActive) }
+        framebufferFeed = feed
+        return feed
+    }
+
+    private func releaseFrameFeed() {
+        framebufferFeed?.stop()
+        framebufferFeed = nil
+        screenView = nil
+    }
+
     private var startTask: Task<Void, Never>?
     private var restartTask: Task<Void, Never>?
     private var hingeTask: Task<Void, Never>?
@@ -247,7 +265,7 @@ final class IOSSimulatorRuntime: ObservableObject {
             memoryError = "Wait for the memory operation to finish before stopping this simulator."
             return
         }
-        screenView = nil
+        releaseFrameFeed()
         memoryStatusTask?.cancel()
         memoryMode = .unknown
         memoryFootprint = nil
@@ -279,7 +297,7 @@ final class IOSSimulatorRuntime: ObservableObject {
     func restart() {
         guard restartTask == nil, !isChangingMemory, !isRotating, !isChangingHinge else { return }
         guard let udid else { start(); return }
-        screenView = nil
+        releaseFrameFeed()
         memoryStatusTask?.cancel()
         memoryMode = .unknown
         memoryFootprint = nil
@@ -408,6 +426,7 @@ final class IOSSimulatorRuntime: ObservableObject {
         while !Task.isCancelled, pendingHingeRequest == nil {
             if let panel = await Self.readDuoPanel(udid: udid), !Task.isCancelled {
                 confirmedDuoPanel = panel
+                framebufferFeed?.preferInnerDisplay(panel.display == .inner)
                 screenView?.preferDuoPanel(isInner: panel.display == .inner)
                 if panel.display == display, panel.illuminated { return pendingHingeRequest == nil }
             }
@@ -620,15 +639,44 @@ final class IOSSimulatorRuntime: ObservableObject {
     }
 
     static func compatibleRuntimeIDs() async -> [IOSSimulatorKind: String] {
-        guard let runtimes = try? await simctlJSON(["list", "-j", "runtimes"]) else { return [:] }
-        let available = (runtimes["runtimes"] as? [[String: Any]] ?? [])
-            .filter { ($0["isAvailable"] as? Bool) == true }
+        guard let json = try? await simctlJSON(["list", "-j", "runtimes"]),
+              let runtimes = json["runtimes"] as? [[String: Any]] else { return [:] }
+        var deviceTypes: [[String: Any]] = []
+        if runtimes.contains(where: { ($0["supportedDeviceTypes"] as? [[String: Any]]) == nil }),
+           let json = try? await simctlJSON(["list", "-j", "devicetypes"]) {
+            deviceTypes = json["devicetypes"] as? [[String: Any]] ?? []
+        }
+        return compatibleRuntimeIDs(runtimes: runtimes, deviceTypes: deviceTypes)
+    }
+
+    nonisolated static func compatibleRuntimeIDs(runtimes: [[String: Any]], deviceTypes: [[String: Any]] = []) -> [IOSSimulatorKind: String] {
+        let available = runtimes
+            .filter {
+                ($0["isAvailable"] as? Bool) == true &&
+                    ($0["identifier"] as? String)?.hasPrefix("com.apple.CoreSimulator.SimRuntime.iOS-") == true
+            }
             .sorted {
                 ($0["version"] as? String ?? "").compare($1["version"] as? String ?? "", options: .numeric) == .orderedDescending
             }
         func supports(_ runtime: [String: Any], kind: IOSSimulatorKind) -> Bool {
-            let types = runtime["supportedDeviceTypes"] as? [[String: Any]] ?? []
-            return types.contains { $0["identifier"] as? String == kind.deviceTypeIdentifier }
+            if let types = runtime["supportedDeviceTypes"] as? [[String: Any]] {
+                return types.contains { $0["identifier"] as? String == kind.deviceTypeIdentifier }
+            }
+            // Older simctl versions describe compatibility on the device type instead.
+            guard let device = deviceTypes.first(where: { ($0["identifier"] as? String) == kind.deviceTypeIdentifier }),
+                  let minVersion = device["minRuntimeVersion"] as? Int,
+                  let maxVersion = device["maxRuntimeVersion"] as? Int,
+                  let version = runtime["version"] as? String else { return false }
+            let fields = version.split(separator: ".", omittingEmptySubsequences: false)
+            let components = fields.compactMap { Int($0) }
+            guard components.count == fields.count, (1...3).contains(components.count),
+                  (0...65535).contains(components[0]) else { return false }
+            let major = components[0]
+            let minor = components.count > 1 ? components[1] : 0
+            let patch = components.count > 2 ? components[2] : 0
+            guard (0...255).contains(minor), (0...255).contains(patch) else { return false }
+            let packed = (major << 16) | (minor << 8) | patch
+            return packed >= minVersion && packed <= maxVersion
         }
         let kinds = IOSSimulatorKind.allCases
         if let common = available.first(where: { runtime in kinds.allSatisfy { supports(runtime, kind: $0) } }),
@@ -641,10 +689,14 @@ final class IOSSimulatorRuntime: ObservableObject {
         })
     }
 
+    nonisolated static func missingRuntimeMessage(for kind: IOSSimulatorKind) -> String {
+        "\(kind.name) needs a compatible iOS Simulator runtime. Check Xcode → Settings → Components."
+    }
+
     private static func findOrCreateDevice(kind: IOSSimulatorKind) async throws -> String {
         let devices = try await simctlJSON(["list", "-j", "devices"])
         if let saved = UserDefaults.standard.string(forKey: kind.savedDeviceKey),
-           deviceType(udid: saved, in: devices) == kind.deviceTypeIdentifier {
+           availableDeviceType(udid: saved, in: devices) == kind.deviceTypeIdentifier {
             return saved
         }
         if let found = firstNamedDevice(kind: kind, in: devices) {
@@ -652,7 +704,7 @@ final class IOSSimulatorRuntime: ObservableObject {
             return found
         }
         guard let runtimeID = await compatibleRuntimeIDs()[kind] else {
-            throw IOSSimulatorError.message("Install an iOS Simulator runtime for \(kind.name) in Xcode.")
+            throw IOSSimulatorError.message(missingRuntimeMessage(for: kind))
         }
         let result = try await Shell.run("/usr/bin/xcrun", [
             "simctl", "create", "SimLab \(kind.name)",
@@ -672,7 +724,7 @@ final class IOSSimulatorRuntime: ObservableObject {
         for name in ["SimLab \(kind.name)", kind.name] {
             for group in groups.values {
                 if let device = group.first(where: {
-                    ($0["name"] as? String) == name &&
+                    ($0["isAvailable"] as? Bool) != false && ($0["name"] as? String) == name &&
                     ($0["deviceTypeIdentifier"] as? String) == kind.deviceTypeIdentifier
                 }), let id = device["udid"] as? String {
                     return id
@@ -682,10 +734,10 @@ final class IOSSimulatorRuntime: ObservableObject {
         return nil
     }
 
-    private static func deviceType(udid: String, in json: [String: Any]) -> String? {
+    private static func availableDeviceType(udid: String, in json: [String: Any]) -> String? {
         let groups = json["devices"] as? [String: [[String: Any]]] ?? [:]
         return groups.values.lazy.flatMap { $0 }
-            .first { ($0["udid"] as? String) == udid }?["deviceTypeIdentifier"] as? String
+            .first { ($0["isAvailable"] as? Bool) != false && ($0["udid"] as? String) == udid }?["deviceTypeIdentifier"] as? String
     }
 
     private static func deviceState(udid: String, in json: [String: Any]) -> String? {

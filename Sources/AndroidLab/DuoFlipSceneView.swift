@@ -307,7 +307,17 @@ final class DuoFlipSceneView: SCNView {
         applyCurrentPose()
     }
 
-    func updateDisplay(_ display: DuoActiveDisplay, visible: Bool) {
+    private var previewPaused = false
+
+    func updateDisplay(_ display: DuoActiveDisplay, visible: Bool, paused: Bool = false) {
+        if paused != previewPaused {
+            previewPaused = paused
+            if paused {
+                idle()
+            } else {
+                startAnimationLoopIfNeeded()
+            }
+        }
         if rendersContinuously != visible {
             rendersContinuously = visible
             isPlaying = visible
@@ -404,6 +414,7 @@ final class DuoFlipSceneView: SCNView {
     }
 
     private func startAnimationLoopIfNeeded() {
+        guard !previewPaused else { return }
         lastTickTime = CACurrentMediaTime()
         guard animationTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
@@ -702,16 +713,17 @@ final class DuoFlipSceneView: SCNView {
 struct DuoFlipCanvas: NSViewRepresentable {
     let display: DuoActiveDisplay
     let visible: Bool
+    let paused: Bool
     let onAttached: @MainActor (DuoFlipSceneView) -> Void
 
     func makeNSView(context: Context) -> DuoFlipSceneView {
         let view = DuoFlipSceneView(frame: .zero)
-        view.updateDisplay(display, visible: visible)
+        view.updateDisplay(display, visible: visible, paused: paused)
         onAttached(view)
         return view
     }
 
     func updateNSView(_ view: DuoFlipSceneView, context: Context) {
-        view.updateDisplay(display, visible: visible)
+        view.updateDisplay(display, visible: visible, paused: paused)
     }
 }

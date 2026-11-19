@@ -30,6 +30,7 @@ mkdir -p "$STAGING/Contents/MacOS" "$STAGING/Contents/Resources"
 
 cp "$BIN" "$STAGING/Contents/MacOS/SimLab"
 cp Resources/SimLab.icns "$STAGING/Contents/Resources/SimLab.icns"
+cp -R Resources/Web "$STAGING/Contents/Resources/Web"
 mkdir -p "$STAGING/Contents/Resources/HingeControl"
 cp Resources/HingeControl/hinge Resources/HingeControl/hinge_helper.m Resources/HingeControl/LICENSE \
     "$STAGING/Contents/Resources/HingeControl/"
@@ -54,6 +55,23 @@ if [ "${SIMLAB_EMBED_LOCAL_CHROME:-0}" = "1" ]; then
     for id in 12 14 15; do
         cp "/Library/Developer/DeviceKit/Chrome/phone${id}.devicechrome/Contents/Resources/PhoneComposite.pdf" "$chrome/phone${id}.pdf"
     done
+    web_assets="$STAGING/Contents/Resources/Web/assets"
+    mkdir -p "$web_assets"
+    swift tools/render-web-chrome.swift "$chrome" "$web_assets/chrome"
+    model_cache="build/web-assets/v68.glb"
+    if [ -n "${SIMLAB_BLENDER_PYTHON:-}" ] &&
+        { [ ! -f "$model_cache" ] || [ tools/prepare-duo-model.py -nt "$model_cache" ] ||
+          ! cmp -s "$chrome/V68.usdz" build/web-assets/source.usdz; }; then
+        mkdir -p build/web-assets
+        "$SIMLAB_BLENDER_PYTHON" tools/prepare-duo-model.py "$chrome/V68.usdz" build/web-assets/v68.raw.glb
+        "${SIMLAB_GLTFPACK:-gltfpack}" -i build/web-assets/v68.raw.glb -o "$model_cache.tmp.glb" -cc -kn -km
+        mv "$model_cache.tmp.glb" "$model_cache"
+        cp "$chrome/V68.usdz" build/web-assets/source.usdz
+        rm build/web-assets/v68.raw.glb
+    fi
+    if [ -f "$model_cache" ]; then
+        cp "$model_cache" "$web_assets/v68.glb"
+    fi
 fi
 if [ "${SIMLAB_BUNDLE_ANDROID_SDK:-0}" = "1" ]; then
     tools/bundle-sdk.sh "$STAGING/Contents/Resources/AndroidSDK"

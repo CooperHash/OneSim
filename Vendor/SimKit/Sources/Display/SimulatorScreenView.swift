@@ -42,8 +42,8 @@ public final class SimulatorScreenView: MTKView {
   }
 
   public override func draw(_ rect: NSRect) {
-    guard let latestSurface else { return }
-    present(surface: latestSurface)
+    guard let surface = frameFeed?.surface else { return }
+    present(surface: surface)
   }
 
   private var renderer: MetalRenderer?
@@ -59,15 +59,19 @@ public final class SimulatorScreenView: MTKView {
     allowsDirectHitTesting ? super.hitTest(point) : nil
   }
 
-  private var framebuffer: SimulatorFramebuffer?
+  private var frameFeed: SimulatorFrameFeed?
+  private var surfaceObserver: UUID?
+  private var ownsFrameFeed = false
+
+  public var previewPaused = false {
+    didSet {
+      guard previewPaused != oldValue else { return }
+      isPaused = previewPaused
+    }
+  }
+
   private var input: HIDInput?
   private var lastReportedImageSize: CGSize?
-  /// Latest IOSurface from the simulator. iOS writes to the same surface in place when
-  /// the UI updates, so we re-render this surface every display tick rather than waiting
-  /// for explicit `frameCallback` invocations (which only fire on framebuffer *swap*,
-  /// not on in-place modifications).
-  private var latestSurface: IOSurface?
-
   /// Currently attached device UDID, or nil if not attached.
   public private(set) var attachedUDID: String?
 
@@ -101,50 +105,25 @@ public final class SimulatorScreenView: MTKView {
 
   /// Connect to the device's framebuffer and prepare the input pipeline. Throws if the
   /// device is missing or not booted.
-  public func attach(deviceUDID udid: String) throws {
+  public func attach(deviceUDID udid: String, sharedFeed: SimulatorFrameFeed? = nil) throws {
     detach()
-    let runtime = CoreSimulatorRuntime()
-    do {
-      try runtime.load()
-    } catch {
-      throw SimKitError.frameworkLoadFailed(detail: String(describing: error))
+    let feed = try sharedFeed ?? SimulatorFrameFeed(udid: udid)
+    frameFeed = feed
+    ownsFrameFeed = sharedFeed == nil
+    surfaceObserver = feed.observeActiveSurfaces { [weak self] surface in
+      guard let self, !previewPaused else { return }
+      onSurfaceFrame?(surface)
     }
-    let resolver = SimDeviceResolver(runtime: runtime)
-    guard let device = resolver.resolve(udid: udid) else {
-      throw SimKitError.deviceNotFound(udid: udid)
-    }
-    let fb = SimulatorFramebuffer(
-      device: device,
-      onFrame: { [weak self] surface in
-        Task { @MainActor [weak self] in
-          self?.latestSurface = surface
-        }
-      },
-      onActiveSurface: { [weak self] surface in
-        Task { @MainActor [weak self] in
-          self?.onSurfaceFrame?(surface)
-        }
-      }
-    )
-    do {
-      try fb.start()
-    } catch let error as SimulatorFramebuffer.FramebufferError {
-      switch error {
-      case .ioUnavailable: throw SimKitError.ioUnavailable
-      case .noFramebuffer: throw SimKitError.noFramebuffer
-      case .callbackUnavailable: throw SimKitError.callbackRegistrationFailed
-      }
-    }
-    framebuffer = fb
-    input = HIDInput(udid: udid, resolver: resolver, runtime: runtime)
+    input = feed.makeInput()
     attachedUDID = udid
   }
 
   public func detach() {
-    latestSurface = nil
     lastReportedImageSize = nil
-    framebuffer?.stop()
-    framebuffer = nil
+    if let surfaceObserver { frameFeed?.removeObserver(surfaceObserver) }
+    surfaceObserver = nil
+    if ownsFrameFeed { frameFeed?.stop() }
+    frameFeed = nil
     input = nil
     attachedUDID = nil
   }
@@ -189,7 +168,7 @@ public final class SimulatorScreenView: MTKView {
 
   /// Prefer the panel CoreSimulator reports active, while its pixels wake up.
   public func preferDuoPanel(isInner: Bool) {
-    framebuffer?.setPreferredInnerDisplay(isInner)
+    frameFeed?.preferInnerDisplay(isInner)
   }
 
   /// Send a continuous touch from a host view that displays this framebuffer

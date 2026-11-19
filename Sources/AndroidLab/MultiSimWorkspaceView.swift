@@ -10,12 +10,7 @@ struct MultiSimWorkspaceView: View {
     private var previewVisible: Bool { windowVisible && !web.lanPowerSaving }
 
     @EnvironmentObject private var model: AppModel
-    @State private var focusedMemberID: String?
     @StateObject private var resources = SimulatorResourceMonitor()
-
-    private var focusedIndex: Int {
-        workspace.members.firstIndex { $0.id == focusedMemberID } ?? 0
-    }
 
     private var availableAndroids: [AvdDevice] {
         model.devices.filter { !workspace.members.contains(.android($0.id)) }
@@ -24,90 +19,18 @@ struct MultiSimWorkspaceView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollViewReader { scrollProxy in
-                VStack(spacing: 0) {
-                    HStack(spacing: 6) {
-                        Button {
-                            moveFocus(by: -1, using: scrollProxy)
-                        } label: {
-                            Image(systemName: "chevron.left")
+                ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                    HStack(alignment: .top, spacing: 18) {
+                        ForEach(workspace.members) { member in
+                            memberColumn(member).id(member.id)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(focusedIndex == 0)
-                        .help("Previous simulator")
-
-                        ScrollViewReader { chipProxy in
-                            ScrollView(.horizontal, showsIndicators: true) {
-                                HStack(spacing: 6) {
-                                    ForEach(workspace.members) { member in
-                                        Button(memberName(member)) {
-                                            focus(member, using: scrollProxy)
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-                                        .id("chip:\(member.id)")
-                                    }
-                                }
-                            }
-                            .onChange(of: focusedMemberID) { _, newID in
-                                guard let newID else { return }
-                                withAnimation { chipProxy.scrollTo("chip:\(newID)", anchor: .center) }
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-
-                        Button {
-                            moveFocus(by: 1, using: scrollProxy)
-                        } label: {
-                            Image(systemName: "chevron.right")
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(focusedIndex >= workspace.members.count - 1)
-                        .help("Next simulator")
-
-                        Text("\(workspace.members.count) simulators")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 9)
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 24).onEnded { value in
-                            let horizontal = value.translation.width
-                            guard abs(horizontal) > 40,
-                                  abs(horizontal) > abs(value.translation.height) else { return }
-                            moveFocus(by: horizontal < 0 ? 1 : -1, using: scrollProxy)
-                        }
-                    )
-                    Divider()
-
-                    ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                        HStack(alignment: .top, spacing: 20) {
-                            ForEach(workspace.members) { member in
-                                memberColumn(member)
-                                    .id(member.id)
-                            }
-                        }
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 18)
-                        .frame(minWidth: geometry.size.width,
-                               minHeight: max(0, geometry.size.height - 43),
-                               alignment: .center)
-                    }
-                    .onChange(of: workspace.members) { oldMembers, newMembers in
-                        if !newMembers.contains(where: { $0.id == focusedMemberID }) {
-                            focusedMemberID = newMembers.first?.id
-                        }
-                        guard let last = newMembers.last,
-                              !oldMembers.contains(last) else { return }
-                        focusedMemberID = last.id
-                        withAnimation { scrollProxy.scrollTo(last.id, anchor: .trailing) }
-                    }
-                    .onChange(of: workspace.androidID) { _, _ in
-                        focusedMemberID = workspace.members.first?.id
-                    }
+                    .padding(18)
+                    .frame(minWidth: geometry.size.width, alignment: .topLeading)
+                }
+                .onChange(of: workspace.members) { oldMembers, newMembers in
+                    guard let added = newMembers.first(where: { !oldMembers.contains($0) }) else { return }
+                    withAnimation { scrollProxy.scrollTo(added.id, anchor: .trailing) }
                 }
                 .background(Theme.stage)
             }
@@ -115,7 +38,6 @@ struct MultiSimWorkspaceView: View {
         .environment(\.simulatorPreviewPaused, !previewVisible)
         .background(WindowPreviewVisibility(visible: $windowVisible))
         .navigationTitle("MultiSim")
-        .navigationSubtitle("\(workspace.members.count) simulators · \(workspace.androidID)")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
@@ -147,9 +69,6 @@ struct MultiSimWorkspaceView: View {
                 WebMultiSimToolbar(web: model.web, workspace: workspace)
             }
         }
-        .task(id: workspace.androidID) {
-            focusedMemberID = workspace.members.first?.id
-        }
         .task(id: previewVisible ? workspace.members : []) {
             guard previewVisible else { return }
             while !Task.isCancelled {
@@ -173,17 +92,6 @@ struct MultiSimWorkspaceView: View {
         }
     }
 
-    private func focus(_ member: MultiSimMember, using proxy: ScrollViewProxy) {
-        focusedMemberID = member.id
-        withAnimation { proxy.scrollTo(member.id, anchor: .center) }
-    }
-
-    private func moveFocus(by offset: Int, using proxy: ScrollViewProxy) {
-        let index = focusedIndex + offset
-        guard workspace.members.indices.contains(index) else { return }
-        focus(workspace.members[index], using: proxy)
-    }
-
     @ViewBuilder
     private func memberColumn(_ member: MultiSimMember) -> some View {
         switch member {
@@ -200,6 +108,10 @@ struct MultiSimWorkspaceView: View {
                             .foregroundStyle(.secondary)
                         Text(device.displayName)
                             .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                        Text("\(device.width) × \(device.height) · \(runtime.state.label)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                         Spacer()
                         AndroidSlimMenu(device: device, paths: model.settings, runtime: runtime)
@@ -264,6 +176,8 @@ private struct IOSSimulatorColumn: View {
     let onRemove: () -> Void
     @State private var screenError: String?
     @State private var iosImageSize: CGSize?
+    @State private var zoom: CGFloat = 1
+    @State private var showHinge = false
 
     // The 16 Pro's 2622-pixel display is 678 points tall in this workspace.
     // Every screen is drawn at the same physical scale using the simulator's
@@ -316,21 +230,23 @@ private struct IOSSimulatorColumn: View {
             : CGSize(width: nativeScreenSize.height, height: nativeScreenSize.width)
     }
 
-    private var screenWidth: CGFloat { displayScreenSize.width * Self.pointsPerNativePixel }
-    private var screenHeight: CGFloat { displayScreenSize.height * Self.pointsPerNativePixel }
+    private var pointsPerPixel: CGFloat { Self.pointsPerNativePixel * zoom }
+
+    private var screenWidth: CGFloat { displayScreenSize.width * pointsPerPixel }
+    private var screenHeight: CGFloat { displayScreenSize.height * pointsPerPixel }
 
     // DeviceKit's chrome art is in points at the simulator's 3x pixel scale.
-    private var duoChromeScale: CGFloat { 3 * Self.pointsPerNativePixel }
+    private var duoChromeScale: CGFloat { 3 * pointsPerPixel }
 
     private var shellWidth: CGFloat {
-        guard kind == .iphoneDuo else { return screenWidth + 22 }
+        guard kind == .iphoneDuo else { return screenWidth + 22 * zoom }
         let horizontalPadding: CGFloat = duoDisplay == .outer ? 48 : 34
         let verticalPadding: CGFloat = duoDisplay == .outer ? 28 : 34
         return screenWidth + (isLandscape ? verticalPadding : horizontalPadding) * duoChromeScale
     }
 
     private var shellHeight: CGFloat {
-        guard kind == .iphoneDuo else { return screenHeight + 22 }
+        guard kind == .iphoneDuo else { return screenHeight + 22 * zoom }
         let horizontalPadding: CGFloat = duoDisplay == .outer ? 48 : 34
         let verticalPadding: CGFloat = duoDisplay == .outer ? 28 : 34
         return screenHeight + (isLandscape ? horizontalPadding : verticalPadding) * duoChromeScale
@@ -339,25 +255,21 @@ private struct IOSSimulatorColumn: View {
     private var duoUnfoldedShellSize: CGSize {
         let padding = 34 * duoChromeScale
         let portraitOrient = runtime.orientation.clockwiseQuarterTurns.isMultiple(of: 2)
-        let w = (portraitOrient ? 2853 : 2007) * Self.pointsPerNativePixel + padding
-        let h = (portraitOrient ? 2007 : 2853) * Self.pointsPerNativePixel + padding
+        let w = (portraitOrient ? 2853 : 2007) * pointsPerPixel + padding
+        let h = (portraitOrient ? 2007 : 2853) * pointsPerPixel + padding
         return CGSize(width: w, height: h)
     }
 
     private var stageHeight: CGFloat {
-        if kind == .iphoneDuo {
-            return max(720, shellHeight, duoUnfoldedShellSize.height + 28)
+        if kind == .iphoneDuo && runtime.is3DPoseActive {
+            return max(720 * zoom, shellHeight + 28, duoUnfoldedShellSize.height + 28)
         }
-        return max(704, shellHeight)
+        return max(260, shellHeight + 28)
     }
     private var panelWidth: CGFloat {
-        if kind == .iphoneDuo {
-            return max(shellWidth + 30, duoUnfoldedShellSize.width + 30)
-        }
-        return screenWidth + 78
-    }
-    private var panelHeight: CGFloat {
-        stageHeight + (kind == .iphoneDuo ? 92 : 56)
+        let width = kind == .iphoneDuo && runtime.is3DPoseActive
+            ? max(shellWidth, duoUnfoldedShellSize.width) : shellWidth
+        return max(230, width + 30)
     }
 
     var body: some View {
@@ -426,7 +338,7 @@ private struct IOSSimulatorColumn: View {
                     .padding(.horizontal, 8)
             }
             iosPanel
-                .frame(width: panelWidth, height: panelHeight)
+                .frame(width: panelWidth + 69, height: stageHeight)
                 .background(Theme.background, in: RoundedRectangle(cornerRadius: 15))
                 .overlay(RoundedRectangle(cornerRadius: 15).stroke(Theme.separator))
         }
@@ -458,7 +370,7 @@ private struct IOSSimulatorColumn: View {
     }
 
     private var iosPanel: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
             ZStack {
                 Theme.stage
                 switch runtime.state {
@@ -495,7 +407,7 @@ private struct IOSSimulatorColumn: View {
                     if runtime.is3DPoseActive {
                         Theme.stage.allowsHitTesting(false)
                     }
-                    DuoFlipCanvas(display: duoDisplay, visible: runtime.is3DPoseActive && previewVisible, paused: !previewVisible) { runtime.flipRenderer = $0 }
+                    DuoFlipCanvas(display: duoDisplay, visible: runtime.is3DPoseActive && previewVisible, paused: !previewVisible, zoom: zoom) { runtime.flipRenderer = $0 }
                         .frame(width: panelWidth, height: stageHeight)
                         .opacity(runtime.is3DPoseActive ? 1 : 0)
                         .allowsHitTesting(false)
@@ -521,19 +433,13 @@ private struct IOSSimulatorColumn: View {
                     }
                 }
             }
-            .frame(height: stageHeight)
-
-            if kind == .iphoneDuo {
-                Divider()
-                duoHingeControlBar
-                    .frame(height: 36)
-                    .background(.bar)
-                    .disabled(runtime.state != .running || runtime.isRotating)
-            }
+            .frame(width: panelWidth, height: stageHeight)
 
             Divider()
-            ScrollView(.horizontal, showsIndicators: false) {
-              HStack(spacing: 4) {
+            ScrollView(.vertical, showsIndicators: false) {
+              VStack(spacing: 4) {
+                SimulatorZoomButton(zoom: $zoom)
+                Divider().padding(.vertical, 3)
                 if kind == .iphoneDuo {
                     let isFolded = duoDisplay == .outer
                     VerticalToolButton(
@@ -543,6 +449,11 @@ private struct IOSSimulatorColumn: View {
                         runtime.setDuoFolded(!isFolded)
                     }
                     .disabled(runtime.isChangingHinge || runtime.isRotating)
+                    VerticalToolButton(icon: "slider.horizontal.3", title: "Hinge") { showHinge.toggle() }
+                        .popover(isPresented: $showHinge, arrowEdge: .trailing) {
+                            duoHingeControlBar.frame(width: 380).padding(.vertical, 10)
+                        }
+                        .disabled(runtime.isRotating)
                 }
                 VerticalToolButton(icon: runtime.isRotating ? "hourglass" : "rotate.right",
                                    title: runtime.isRotating ? "Turning…" : "Rotate") {
@@ -581,9 +492,11 @@ private struct IOSSimulatorColumn: View {
                     runtime.restart()
                 }
               }
+              .padding(.vertical, 8)
+              .padding(.horizontal, 4)
               .frame(maxWidth: .infinity)
             }
-            .frame(height: 55)
+            .frame(width: 68, height: stageHeight)
             .background(.bar)
             .disabled(runtime.state != .running)
         }
@@ -676,8 +589,8 @@ private struct IOSSimulatorColumn: View {
         )
         if kind == .iphoneDuo || screenQuarterTurns != 0 {
             screen
-                .frame(width: nativeScreenSize.width * Self.pointsPerNativePixel,
-                       height: nativeScreenSize.height * Self.pointsPerNativePixel)
+                .frame(width: nativeScreenSize.width * pointsPerPixel,
+                       height: nativeScreenSize.height * pointsPerPixel)
                 .rotationEffect(.degrees(Double(screenQuarterTurns * 90)))
                 .frame(width: screenWidth, height: screenHeight)
         } else {
@@ -692,30 +605,30 @@ private struct IOSSimulatorColumn: View {
                     .resizable()
                     .interpolation(.high)
                     .frame(
-                        width: screenQuarterTurns.isMultiple(of: 2) ? screenWidth + 22 : screenHeight + 22,
-                        height: screenQuarterTurns.isMultiple(of: 2) ? screenHeight + 22 : screenWidth + 22
+                        width: screenQuarterTurns.isMultiple(of: 2) ? screenWidth + 22 * zoom : screenHeight + 22 * zoom,
+                        height: screenQuarterTurns.isMultiple(of: 2) ? screenHeight + 22 * zoom : screenWidth + 22 * zoom
                     )
                     .rotationEffect(.degrees(Double(screenQuarterTurns * 90)))
-                    .frame(width: screenWidth + 22, height: screenHeight + 22)
+                    .frame(width: screenWidth + 22 * zoom, height: screenHeight + 22 * zoom)
                     .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
                     .allowsHitTesting(false)
             } else {
-                RoundedRectangle(cornerRadius: 49, style: .continuous)
+                RoundedRectangle(cornerRadius: 49 * zoom, style: .continuous)
                     .fill(Color(white: 0.12))
                     .shadow(color: .black.opacity(0.25), radius: 16, y: 8)
                     .allowsHitTesting(false)
             }
             simulatorScreen(udid: udid)
-                .clipShape(RoundedRectangle(cornerRadius: 39, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 39 * zoom, style: .continuous))
                 .allowsHitTesting(screenQuarterTurns == 0)
             if screenQuarterTurns != 0 {
                 DuoPointerSurface(runtime: runtime, screenID: 1,
                                   quarterTurns: screenQuarterTurns)
                     .frame(width: screenWidth, height: screenHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 39, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 39 * zoom, style: .continuous))
             }
         }
-        .frame(width: screenWidth + 22, height: screenHeight + 22)
+        .frame(width: screenWidth + 22 * zoom, height: screenHeight + 22 * zoom)
     }
 
     private var duoScreenShape: UnevenRoundedRectangle {

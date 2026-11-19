@@ -20,16 +20,33 @@ section { flex: 0 0 auto; min-width: 244px; scroll-margin: 0; }
 .device-heading { padding: 3px 8px 9px; }
 .platform { font-size: .66rem; font-weight: 750; letter-spacing: .12em; color: GrayText; }
 .detail { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.device-body {
+  --scaled-pixel: calc(var(--px) * var(--zoom, 1));
+  display: grid; grid-template-columns: auto 82px; align-items: start;
+  border: 1px solid var(--edge); border-radius: 12px; background: var(--stage);
+}
+.rail {
+  align-self: stretch; min-height: 0; padding: 6px;
+  border-inline-start: 1px solid var(--edge); background: Canvas;
+  border-radius: 0 12px 12px 0;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.rail nav, .rail form, .hinge { display: grid; gap: 4px; padding: 0; }
+.rail details { min-width: 0; font-size: .78rem; }
+.rail summary { cursor: pointer; padding: 6px 2px; }
+.rail input { min-width: 0; width: 100%; }
+.rail output { display: block; }
+.rail button { width: 100%; padding-inline: 3px; }
 .stage {
   position: relative; display: grid; place-items: center; padding: 12px;
-  border: 1px solid var(--edge); border-radius: 16px; background: var(--stage);
+  border-radius: 12px 0 0 12px;
 }
 .unavailable { max-width: 230px; margin: 12px; color: GrayText; font-size: .8rem; overflow-wrap: anywhere; }
 .stage:has(.unavailable:not([hidden])) .fold-scene { display: none; }
 .shell {
   display: grid; place-items: center; position: relative; isolation: isolate;
-  width: calc(var(--width, 1080) * var(--px) * var(--density, 1));
-  height: calc(var(--height, 2400) * var(--px) * var(--density, 1));
+  width: calc(var(--width, 1080) * var(--scaled-pixel) * var(--density, 1));
+  height: calc(var(--height, 2400) * var(--scaled-pixel) * var(--density, 1));
   margin: 9px; background: #1f1f22; border-radius: var(--radius, 30px);
   box-shadow: 0 0 0 6px #202023, 0 0 0 7px #47474b, 0 10px 20px #0005;
 }
@@ -45,7 +62,7 @@ section { flex: 0 0 auto; min-width: 244px; scroll-margin: 0; }
   height: calc(100% + 18px); filter: drop-shadow(0 7px 8px #0005);
 }
 .shell.sideways .chrome {
-  width: calc(var(--height) * var(--px) + 18px); height: calc(var(--width) * var(--px) + 18px);
+  width: calc(var(--height) * var(--scaled-pixel) + 18px); height: calc(var(--width) * var(--scaled-pixel) + 18px);
 }
 .chrome { transform: rotate(var(--turn, 0deg)); }
 .shell.cover { --radius: 5px 42px 42px 5px; }
@@ -53,13 +70,13 @@ section { flex: 0 0 auto; min-width: 244px; scroll-margin: 0; }
 .shell.cover.r2 { --radius: 42px 5px 5px 42px; }
 .shell.cover.r3 { --radius: 42px 42px 5px 5px; }
 .stage.folding {
-  width: max(calc(2853 * var(--px) + 44px), calc(var(--width, 1398) * var(--px) + 44px));
-  height: max(calc(2622 * var(--px) + 44px), calc(var(--height, 2034) * var(--px) + 44px));
+  width: max(calc(2853 * var(--scaled-pixel) + 44px), calc(var(--width, 1398) * var(--scaled-pixel) + 44px));
+  height: max(calc(2622 * var(--scaled-pixel) + 44px), calc(var(--height, 2034) * var(--scaled-pixel) + 44px));
 }
 .stage.folding .shell { visibility: hidden; position: absolute; }
 .fold-scene { position: absolute; inset: 0; background: transparent; border-radius: inherit; }
-nav, form, .hinge { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.controls, .typing, .hinge, #access { padding: 7px 6px 0; }
+nav#devices, #access { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+#access { padding: 7px 6px 0; }
 button, input { font: inherit; font-size: .78rem; min-height: 32px; }
 button, input:not([type=range]) { padding: 4px 9px; }
 button { cursor: pointer; }

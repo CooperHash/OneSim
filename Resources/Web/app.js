@@ -52,6 +52,14 @@ function makePanel(name, index) {
   if (index === 0) shell.classList.add('android');
   if (index === 1) chrome.src = '/assets/chrome/phone12.png?v=2';
   const controls = card.querySelector('.controls');
+  const zoom = card.querySelector('.zoom input');
+  const reset = card.querySelector('.zoom-reset');
+  const setZoom = () => {
+    stage.parentElement.style.setProperty('--zoom', Number(zoom.value) / 100);
+    reset.textContent = zoom.value + '%';
+  };
+  zoom.oninput = setZoom;
+  reset.onclick = () => { zoom.value = 100; setZoom(); };
   commands[index].forEach(([action, label]) => controls.append(button(label, () => send(index, action))));
   const form = card.querySelector('.typing');
   const text = form.querySelector('input');
@@ -66,8 +74,12 @@ function makePanel(name, index) {
   };
   const panel = { index, stage, shell, screen, chrome, context, detail, state: {}, token: 0 };
   if (index === 2) {
+    const hingeControl = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = 'Hinge';
     const hinge = document.createElement('div');
     hinge.className = 'hinge';
+    hingeControl.append(summary, hinge);
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.min = 0;
@@ -93,7 +105,7 @@ function makePanel(name, index) {
       hinge.append(button(label, () => send(index, 'hinge', { angle })));
     }
     hinge.append(slider, output);
-    controls.after(hinge);
+    controls.after(hingeControl);
     if (document.body.dataset.duoModel === 'available') import('/duo.js').then(({ DuoModel }) => DuoModel.load(stage, panel)).then(model => {
       panel.model = model;
       if (panel.displayRevision === panel.state.revision && panel.displayRevision) {

@@ -33,8 +33,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var dependencyReport: DependencySetup.Report?
     @Published private(set) var setupProgress: [String: Int64] = [:]
     @Published private(set) var setupMessage = ""
+    @Published private(set) var isCheckingDependencies = false
     @Published private(set) var isSettingUp = false
     let web = WebMultiSimController()
+    let xcode = XcodeManager()
 
     private var monitorTask: Task<Void, Never>?
     private var hasStarted = false
@@ -73,16 +75,22 @@ final class AppModel: ObservableObject {
         guard !hasStarted else { return }
         hasStarted = true
         Task {
+            await xcode.refresh()
             await refresh()
-            await checkDependencies()
+            await checkDependencies(autoInstallIOS: true)
             startMonitoring()
         }
     }
 
-    func checkDependencies(showIOSNotes: Bool = false) async {
+    func checkDependencies(showSheet: Bool = false, autoInstallIOS: Bool = false) async {
+        guard !isCheckingDependencies else { return }
+        isCheckingDependencies = true
+        defer { isCheckingDependencies = false }
+        if showSheet { showDependencySetup = true }
+        if !isSettingUp { setupMessage = "" }
         let report = await DependencySetup.scan(paths: settings)
         dependencyReport = report
-        showDependencySetup = !report.isReady || (showIOSNotes && !report.iosNotes.isEmpty)
+        showDependencySetup = showDependencySetup || !report.isReady || report.xcodeNeedsSetup || report.iosIssue != nil
         if report.isReady {
             do {
                 try await createDefaultWorkspaceIfNeeded()
@@ -90,22 +98,50 @@ final class AppModel: ObservableObject {
                 toast = error.localizedDescription
             }
         }
+        if autoInstallIOS, report.isReady, report.iosPlan != nil {
+            installMissingDependencies()
+        }
     }
 
     func installMissingDependencies() {
         guard !isSettingUp, let report = dependencyReport, report.platformError == nil,
-              !report.android.isEmpty else { return }
+              !report.android.isEmpty || report.iosPlan != nil else { return }
+        runDependencySetup {
+            var failures: [String] = []
+            do { try await self.installMissingAndroidPackages() }
+            catch { failures.append(error.localizedDescription) }
+            if let plan = report.iosPlan {
+                do { try await XcodeRuntimeSetup.install(plan) { self.setupMessage = $0 } }
+                catch { failures.append(error.localizedDescription) }
+            }
+            if !failures.isEmpty { throw SetupError(failures.joined(separator: "\n\n")) }
+        }
+    }
+
+    func importIOSRuntime(_ file: URL) {
+        guard !isSettingUp, dependencyReport?.xcode != nil else { return }
+        runDependencySetup {
+            try await XcodeRuntimeSetup.importRuntime(file) { self.setupMessage = $0 }
+        }
+    }
+
+    private func runDependencySetup(_ operation: @escaping @MainActor () async throws -> Void) {
         isSettingUp = true
+        showDependencySetup = true
         setupProgress = [:]
         setupMessage = "Preparing downloads…"
         Task { [self] in
             defer { isSettingUp = false }
             do {
-                try await installMissingAndroidPackages()
+                try await operation()
                 await refresh()
+                setupMessage = ""
                 await checkDependencies()
             } catch {
+                await refresh()
+                await checkDependencies(showSheet: true)
                 setupMessage = error.localizedDescription
+                showDependencySetup = true
             }
         }
     }

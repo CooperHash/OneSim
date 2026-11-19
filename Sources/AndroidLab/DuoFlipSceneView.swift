@@ -476,10 +476,16 @@ final class DuoFlipSceneView: SCNView {
         setNeedsDisplay(bounds)
     }
 
+    var previewZoom: CGFloat = 1 {
+        didSet {
+            if previewZoom != oldValue { updateCameraDistance(); setNeedsDisplay(bounds) }
+        }
+    }
+
     private func updateCameraDistance() {
         guard let cameraNode else { return }
         let viewHeight = bounds.height > 10 ? bounds.height : 548
-        let visibleUnitsY = viewHeight / Self.pointsPerModelUnit
+        let visibleUnitsY = viewHeight / (Self.pointsPerModelUnit * previewZoom)
         let halfFovRad = Self.fovDegrees * .pi / 360.0
         let zDist = Self.screenPlaneZ + visibleUnitsY / (2.0 * tan(halfFovRad))
         cameraNode.position = SCNVector3(0, 0, zDist)
@@ -714,16 +720,19 @@ struct DuoFlipCanvas: NSViewRepresentable {
     let display: DuoActiveDisplay
     let visible: Bool
     let paused: Bool
+    var zoom: CGFloat = 1
     let onAttached: @MainActor (DuoFlipSceneView) -> Void
 
     func makeNSView(context: Context) -> DuoFlipSceneView {
         let view = DuoFlipSceneView(frame: .zero)
+        view.previewZoom = zoom
         view.updateDisplay(display, visible: visible, paused: paused)
         onAttached(view)
         return view
     }
 
     func updateNSView(_ view: DuoFlipSceneView, context: Context) {
+        view.previewZoom = zoom
         view.updateDisplay(display, visible: visible, paused: paused)
     }
 }

@@ -11,7 +11,6 @@ struct DeviceWorkspaceView: View {
     @State private var zoom: CGFloat = 1
     @State private var showType = false
     @State private var showApps = false
-    @State private var showLog = false
     @State private var text = ""
     @StateObject private var resources = SimulatorResourceMonitor()
 
@@ -36,39 +35,12 @@ struct DeviceWorkspaceView: View {
                 .navigationTitle(showsWindowToolbar ? "\(device.displayName) — Emulator" : "MultiSim")
                 .toolbar {
                     if showsWindowToolbar {
-                      ToolbarItemGroup(placement: .automatic) {
-                        Button { zoom = max(0.5, zoom - 0.15) } label: {
-                            Label("Zoom Out", systemImage: "minus.magnifyingglass")
-                        }
-                        .help("Zoom out")
-                        .disabled(!runtime.isScreenConnected || zoom <= 0.5)
-                        Button { zoom = 1 } label: {
-                            Label("Zoom to Fit", systemImage: "arrow.up.left.and.arrow.down.right")
-                        }
-                        .help("Zoom to fit")
-                        .disabled(!runtime.isScreenConnected)
-                        Button { zoom = min(2.5, zoom + 0.15) } label: {
-                            Label("Zoom In", systemImage: "plus.magnifyingglass")
-                        }
-                        .help("Zoom in")
-                        .disabled(!runtime.isScreenConnected || zoom >= 2.5)
-                    }
                       ToolbarItem(placement: .primaryAction) {
                         HStack(spacing: 8) {
                             if runtime.state == .running {
                                 SimulatorResourceBadge(usage: resources.readings["android:\(deviceID)"])
                             }
                             AndroidSlimMenu(device: device, paths: model.settings, runtime: runtime)
-                            StatusBadge(state: runtime.state)
-                            Button {
-                                showLog = true
-                            } label: {
-                                Image(systemName: "doc.text.magnifyingglass")
-                            }
-                            .popover(isPresented: $showLog, arrowEdge: .bottom) {
-                                logPopover(runtime)
-                            }
-                            .help("Session log")
                         }
                       }
                     }
@@ -116,6 +88,9 @@ struct DeviceWorkspaceView: View {
     private func toolbar(_ device: AvdDevice, _ runtime: DeviceRuntime) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 4) {
+                SimulatorZoomButton(zoom: $zoom)
+                    .disabled(!runtime.isScreenConnected)
+                Divider().padding(.vertical, 3)
                 VerticalToolButton(icon: "rotate.right", title: "Rotate") { model.rotate(deviceID: device.id) }
                     .disabled(!runtime.state.isLive)
                 if device.isFoldable {
@@ -180,16 +155,6 @@ struct DeviceWorkspaceView: View {
         showType = false
     }
 
-    private func logPopover(_ runtime: DeviceRuntime) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Session log").font(.system(size: 12, weight: .semibold))
-            ScrollView {
-                Text(runtime.bootLog.isEmpty ? "No log output yet." : runtime.bootLog)
-                    .font(Theme.mono).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(width: 560, height: 300)
-        }.padding(12)
-    }
 }
 
 private struct LiveDeviceCanvas: View {
@@ -246,25 +211,7 @@ private struct LiveDeviceCanvas: View {
                     }
                 }
 
-                VStack {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(Theme.statusColor(runtime.state))
-                            .frame(width: 7, height: 7)
-                        Text(device.displayName)
-                            .font(.system(size: 11, weight: .medium))
-                        Text(runtime.state.label)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(Theme.separator, lineWidth: 1))
-                    .padding(.top, 12)
-                    Spacer()
-                }
-                .allowsHitTesting(false)
+
             }
             .clipped()
         }

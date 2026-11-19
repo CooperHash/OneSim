@@ -25,7 +25,11 @@ struct DependencySetup {
 
     struct Report {
         var android: [Package]
-        let iosNotes: [String]
+        var xcode: InstalledXcode?
+        var ios: XcodeRuntimeSetup.Inventory?
+        var iosIssue: String?
+        var xcodeNeedsSetup = false
+        var iosPlan: XcodeRuntimeSetup.Plan? { xcodeNeedsSetup ? nil : ios?.plan }
         var platformError: String? {
             #if arch(arm64)
             nil
@@ -37,19 +41,24 @@ struct DependencySetup {
     }
 
     static func scan(paths: ToolPaths) async -> Report {
-        let android = missingAndroidPackages(paths: paths)
-        let xcode = try? await Shell.run("/usr/bin/xcrun", ["--find", "simctl"], timeout: 8)
-        let firstLaunch = try? await Shell.run("/usr/bin/xcodebuild", ["-checkFirstLaunchStatus"], timeout: 8)
-        guard xcode?.ok == true, firstLaunch?.ok == true else {
-            return Report(android: android, iosNotes: [
-                "For iPhone simulators, select a full Xcode installation and open Xcode once to finish setup."
-            ])
+        var report = Report(android: missingAndroidPackages(paths: paths))
+        report.xcode = await XcodeToolchain.activeXcode()
+        guard report.xcode != nil else {
+            report.iosIssue = "A full Xcode installation is needed for iPhone simulators. Choose or download one in Xcode Versions."
+            return report
         }
-        let installed = await IOSSimulatorRuntime.compatibleRuntimeIDs()
-        let notes = IOSSimulatorKind.allCases.compactMap { kind in
-            installed[kind] == nil ? IOSSimulatorRuntime.missingRuntimeMessage(for: kind) : nil
+        do {
+            report.ios = try await XcodeRuntimeSetup.inventory()
+            if report.ios?.plan == nil { return report }
+        } catch {
+            report.iosIssue = error.localizedDescription
         }
-        return Report(android: android, iosNotes: notes)
+        if let firstLaunch = try? await Shell.run("/usr/bin/xcodebuild", ["-checkFirstLaunchStatus"], timeout: 12),
+           !firstLaunch.ok {
+            report.xcodeNeedsSetup = true
+            report.iosIssue = "The selected Xcode needs its first-launch components before it can install an iOS Runtime."
+        }
+        return report
     }
 
     static func missingAndroidPackages(paths: ToolPaths) -> [Package] {

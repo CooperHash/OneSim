@@ -24,18 +24,30 @@
         <h2></h2>
         <span class="detail"></span>
       </div>
-      <div class="stage">
-        <p class="unavailable" hidden></p>
-        <div class="shell">
-          <canvas class="screen"></canvas>
-          <img class="chrome" alt="" hidden>
+      <div class="device-body">
+        <div class="stage">
+          <p class="unavailable" hidden></p>
+          <div class="shell">
+            <canvas class="screen"></canvas>
+            <img class="chrome" alt="" hidden>
+          </div>
         </div>
+        <aside class="rail">
+          <details class="zoom">
+            <summary>Zoom</summary>
+            <input type="range" min="50" max="250" step="5" value="100" aria-label="Simulator zoom">
+            <button class="zoom-reset" type="button">100%</button>
+          </details>
+          <nav class="controls" aria-label="Device controls"></nav>
+          <details>
+            <summary>Text</summary>
+            <form class="typing">
+              <input aria-label="Text to type" placeholder="Type text" maxlength="80">
+              <button>Type</button>
+            </form>
+          </details>
+        </aside>
       </div>
-      <nav class="controls" aria-label="Device controls"></nav>
-      <form class="typing">
-        <input aria-label="Text to type" placeholder="Type text" maxlength="80">
-        <button>Type</button>
-      </form>
     </section>
   </template>
   <script type="module" src="/app.js"></script>

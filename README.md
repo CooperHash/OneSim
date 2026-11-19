@@ -25,9 +25,9 @@ A native macOS app for running Android and iOS simulators in one window. It mana
 
 ## Setup and build
 
-Use an Apple silicon Mac. iPhone simulators require a full Xcode installation and a compatible simulator runtime. Run Xcode once to finish its installation, then install runtimes in **Xcode → Settings → Components**. SimLab uses the active Xcode and reuses available compatible simulators. For a new device, it uses a runtime that supports both iPhone models where available, then the newest compatible runtime for each model. Android can run while an iPhone model is unavailable.
+Use an Apple silicon Mac. The **Xcode** button in the window header shows the current version and opens the installed and downloadable versions. Downloads use the Xcodes CLI and install into `~/Applications`. Terminal handles any Apple sign-in or administrator prompts. Choose **Use** beside an installed version to switch and restart SimLab. The selection applies to SimLab and its subprocesses.
 
-The setup sheet downloads missing Android archives, verifies Google's published digests, and displays per-package progress. You can reopen it from **File → Set Up MultiSim…** to see guidance for unavailable iPhone models. Allow several GB for Android images and any runtimes you install through Xcode.
+**File → Set Up MultiSim…** shows the exact Xcode path and the detected runtime for each iPhone. If the Mac has only Command Line Tools selected, SimLab looks for a full Xcode in `/Applications` and `~/Applications`. For Xcode installed elsewhere, use **Xcode Versions… → Choose Xcode App…**. If Xcode needs first-launch components, **Finish Xcode Setup** opens the Apple license and administrator prompts in Terminal, then rechecks the runtimes. SimLab reuses compatible runtimes and downloads missing components with `xcodebuild`. **Check Again** refreshes the list after a change in Xcode. If Apple's download fails or you already have an Apple Simulator Runtime DMG, use **Import iOS Runtime…**. Local runtime discovery and import do not use Expo or App Store Connect credentials. Android remains available while an iPhone model is unavailable.
 
 ```bash
 ./build.sh release
@@ -43,7 +43,7 @@ Use **SimLab → Android SDK…** to select a different SDK. SimLab can create A
 1. **Start** an existing AVD from the sidebar, or **＋ New** to create one. Choose **MultiSim** first in New to open Android, iPhone 16 Pro, and iPhone Duo together. Use **＋ Add Simulator** in MultiSim to add devices later.
    - For an iPhone in MultiSim, use its **Memory** menu to apply the balanced profile or restore all services. A profile change restarts only that iPhone. The displayed RAM number is the sum of its simulator processes' `phys_footprint`, not disk usage.
 2. The emulator boots headlessly. Select it in the sidebar to use its live screen in the main window.
-3. Zoom Out / Fit / Zoom In are in the **top toolbar**. The **vertical toolbar on the right** has:
+3. Each simulator has a **vertical toolbar on its right**. **Zoom** adjusts that simulator independently and the percentage button resets it to 100%. Android also has:
    - Rotate (emulator physical rotation + adb fallback)
    - Fold / Unfold for foldable AVDs
    - Back / Home / Recents

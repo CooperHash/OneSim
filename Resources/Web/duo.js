@@ -186,7 +186,9 @@ export class DuoModel {
     const width = this.canvas.clientWidth;
     const height = this.canvas.clientHeight;
     if (!width || !height) return;
-    const cssScale = parseFloat(getComputedStyle(this.stage).getPropertyValue('--px'));
+    const css = getComputedStyle(this.stage);
+    const cssScale = parseFloat(css.getPropertyValue('--px')) *
+      (parseFloat(css.getPropertyValue('--zoom')) || 1);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();

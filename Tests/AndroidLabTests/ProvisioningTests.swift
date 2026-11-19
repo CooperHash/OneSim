@@ -14,7 +14,7 @@ final class ProvisioningTests: XCTestCase {
             "supportedDeviceTypes": [["identifier": IOSSimulatorKind.iphoneDuo.deviceTypeIdentifier]],
         ]]
         XCTAssertEqual(IOSSimulatorRuntime.compatibleRuntimeIDs(runtimes: installed), [.iphone16Pro: version])
-        XCTAssertTrue(DependencySetup.Report(android: [], iosNotes: ["Duo unavailable"]).isReady)
+        XCTAssertTrue(DependencySetup.Report(android: [], iosIssue: "Duo unavailable").isReady)
     }
 
     func testRuntimeSelectionReadsOldDeviceTypeBoundsAndHonorsExplicitSupport() {
@@ -31,6 +31,79 @@ final class ProvisioningTests: XCTestCase {
                                   "supportedDeviceTypes": [["identifier": IOSSimulatorKind.iphoneDuo.deviceTypeIdentifier]]]
         XCTAssertEqual(IOSSimulatorRuntime.compatibleRuntimeIDs(runtimes: [older, duo], deviceTypes: types),
                        [.iphone16Pro: id, .iphoneDuo: duoID])
+        XCTAssertEqual(IOSSimulatorRuntime.compatibleRuntimeIDs(runtimes: [older, duo], deviceTypes: types, sdk: "18.0"),
+                       [.iphone16Pro: id])
+    }
+
+    func testRuntimeDownloadPlansFollowTheSelectedXcodeSDK() {
+        let types: [[String: Any]] = [
+            ["identifier": IOSSimulatorKind.iphone16Pro.deviceTypeIdentifier, "minRuntimeVersion": 18 << 16],
+            ["identifier": IOSSimulatorKind.iphoneDuo.deviceTypeIdentifier, "minRuntimeVersion": (27 << 16) | (1 << 8)],
+        ]
+        let olderPlan = XcodeRuntimeSetup.inventory(sdk: "26.4", runtimes: [], deviceTypes: types).plan
+        XCTAssertEqual(olderPlan?.missing, [.iphone16Pro])
+        XCTAssertEqual(olderPlan?.nextDownload(available: [], attempted: []), "26.4")
+        XCTAssertNil(olderPlan?.nextDownload(available: [.iphone16Pro], attempted: []))
+
+        let pairedPlan = XcodeRuntimeSetup.inventory(sdk: "27.1", runtimes: [], deviceTypes: types).plan
+        XCTAssertEqual(pairedPlan?.missing, IOSSimulatorKind.allCases)
+        XCTAssertEqual(pairedPlan?.nextDownload(available: [], attempted: ["27.1"]), "27.0")
+        XCTAssertEqual(pairedPlan?.nextDownload(available: [.iphoneDuo], attempted: []), "27.0")
+        XCTAssertNil(pairedPlan?.nextDownload(available: [.iphoneDuo], attempted: ["27.0"]))
+        XCTAssertNil(pairedPlan?.nextDownload(available: [.iphone16Pro, .iphoneDuo], attempted: []))
+    }
+
+    func testRuntimeInventoryReadsLegacyMetadataAndIgnoresDiagnosticNoise() throws {
+        let json = try XcodeRuntimeSetup.decodeList("""
+            CoreSimulator warning before the result
+            {
+              "runtimes": [
+                {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-1", "availability": "(available)"},
+                {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-18-2", "availability": "unavailable", "availabilityError": "Disk image is unavailable"}
+              ],
+              "devicetypes": [{"identifier": "\(IOSSimulatorKind.iphone16Pro.deviceTypeIdentifier)", "minRuntimeVersionString": "18.0.0"}]
+            }
+            CoreSimulator diagnostic after the result
+            """)
+        let inventory = XcodeRuntimeSetup.inventory(sdk: "18.2",
+            runtimes: try XCTUnwrap(json["runtimes"] as? [[String: Any]]),
+            deviceTypes: try XCTUnwrap(json["devicetypes"] as? [[String: Any]]))
+        XCTAssertEqual(inventory.installed, [.iphone16Pro: "com.apple.CoreSimulator.SimRuntime.iOS-18-1"])
+        XCTAssertEqual(inventory.supported, [.iphone16Pro])
+        XCTAssertNil(inventory.plan)
+        XCTAssertTrue(inventory.reportedIOS.contains("iOS 18.2 · Disk image is unavailable"))
+        XCTAssertThrowsError(try XcodeRuntimeSetup.decodeList("<html>Failed to load simulator list</html>"))
+    }
+
+    func testRuntimeNewerThanTheSDKMinorIsReusedWhenCoreSimulatorSupportsTheDevice() {
+        let kind = IOSSimulatorKind.iphone16Pro
+        let identifier = "com.apple.CoreSimulator.SimRuntime.iOS-26-6"
+        let inventory = XcodeRuntimeSetup.inventory(sdk: "26.5", runtimes: [[
+            "identifier": identifier, "version": "26.6", "isAvailable": true,
+            "supportedDeviceTypes": [kind.deviceTypeIdentifier],
+        ]], deviceTypes: [["identifier": kind.deviceTypeIdentifier, "minRuntimeVersionString": "18.0"]])
+        XCTAssertEqual(inventory.installed[kind], identifier)
+        XCTAssertNil(inventory.plan)
+    }
+
+    func testSetupFallsBackToFullXcodeWhenSystemUsesCommandLineTools() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = root.appendingPathComponent("Xcode Beta.app")
+        let developer = bundle.appendingPathComponent("Contents/Developer")
+        let executable = developer.appendingPathComponent("usr/bin/xcodebuild")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let plist = try PropertyListSerialization.data(fromPropertyList: [
+            "CFBundleIdentifier": "com.apple.dt.Xcode", "CFBundleShortVersionString": "26.6",
+        ], format: .xml, options: 0)
+        try plist.write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        let fullXcode = try XCTUnwrap(XcodeToolchain.xcode(at: developer.path + "\n"))
+        let commandLineTools = XcodeToolchain.xcode(at: "/Library/Developer/CommandLineTools")
+        XCTAssertNil(commandLineTools)
+        XCTAssertEqual(XcodeToolchain.preferredXcode(saved: nil, system: commandLineTools, installed: [fullXcode]), fullXcode)
+        XCTAssertEqual(XcodeToolchain.xcode(at: bundle.path), fullXcode)
     }
 
     func testSetupAcceptsInstalledPlayStoreARM64AndPrefersTheDefaultImageWhenAvailable() async throws {

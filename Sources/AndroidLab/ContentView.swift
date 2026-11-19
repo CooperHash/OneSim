@@ -21,6 +21,11 @@ struct ContentView: View {
                 }
             }
             .background(Theme.background)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    XcodeToolbar(xcode: model.xcode)
+                }
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $model.showDependencySetup) {

@@ -639,44 +639,42 @@ final class IOSSimulatorRuntime: ObservableObject {
     }
 
     static func compatibleRuntimeIDs() async -> [IOSSimulatorKind: String] {
-        guard let json = try? await simctlJSON(["list", "-j", "runtimes"]),
-              let runtimes = json["runtimes"] as? [[String: Any]] else { return [:] }
-        var deviceTypes: [[String: Any]] = []
-        if runtimes.contains(where: { ($0["supportedDeviceTypes"] as? [[String: Any]]) == nil }),
-           let json = try? await simctlJSON(["list", "-j", "devicetypes"]) {
-            deviceTypes = json["devicetypes"] as? [[String: Any]] ?? []
-        }
-        return compatibleRuntimeIDs(runtimes: runtimes, deviceTypes: deviceTypes)
+        (try? await XcodeRuntimeSetup.inventory().installed) ?? [:]
     }
 
-    nonisolated static func compatibleRuntimeIDs(runtimes: [[String: Any]], deviceTypes: [[String: Any]] = []) -> [IOSSimulatorKind: String] {
+    nonisolated static func compatibleRuntimeIDs(runtimes: [[String: Any]], deviceTypes: [[String: Any]] = [],
+                                                 sdk: String? = nil) -> [IOSSimulatorKind: String] {
+        let ceiling = sdk.flatMap { IOSRuntimeVersion($0) }
         let available = runtimes
             .filter {
-                ($0["isAvailable"] as? Bool) == true &&
-                    ($0["identifier"] as? String)?.hasPrefix("com.apple.CoreSimulator.SimRuntime.iOS-") == true
+                guard XcodeRuntimeSetup.isAvailable($0),
+                      ($0["identifier"] as? String)?.hasPrefix(XcodeRuntimeSetup.iosPrefix) == true else {
+                    return false
+                }
+                guard let ceiling else { return true }
+                return XcodeRuntimeSetup.runtimeVersion($0).flatMap { IOSRuntimeVersion($0) }
+                    .map { $0.major <= ceiling.major } ?? false
             }
             .sorted {
-                ($0["version"] as? String ?? "").compare($1["version"] as? String ?? "", options: .numeric) == .orderedDescending
+                (XcodeRuntimeSetup.runtimeVersion($0) ?? "").compare(
+                    XcodeRuntimeSetup.runtimeVersion($1) ?? "", options: .numeric) == .orderedDescending
             }
         func supports(_ runtime: [String: Any], kind: IOSSimulatorKind) -> Bool {
+            let device = deviceTypes.first { ($0["identifier"] as? String) == kind.deviceTypeIdentifier }
+            if let ceiling, let device, let minimum = XcodeRuntimeSetup.runtimeBound(device, "min"),
+               minimum & ~255 > ceiling.release { return false }
             if let types = runtime["supportedDeviceTypes"] as? [[String: Any]] {
                 return types.contains { $0["identifier"] as? String == kind.deviceTypeIdentifier }
             }
+            if let identifiers = runtime["supportedDeviceTypes"] as? [String] {
+                return identifiers.contains(kind.deviceTypeIdentifier)
+            }
             // Older simctl versions describe compatibility on the device type instead.
-            guard let device = deviceTypes.first(where: { ($0["identifier"] as? String) == kind.deviceTypeIdentifier }),
-                  let minVersion = device["minRuntimeVersion"] as? Int,
-                  let maxVersion = device["maxRuntimeVersion"] as? Int,
-                  let version = runtime["version"] as? String else { return false }
-            let fields = version.split(separator: ".", omittingEmptySubsequences: false)
-            let components = fields.compactMap { Int($0) }
-            guard components.count == fields.count, (1...3).contains(components.count),
-                  (0...65535).contains(components[0]) else { return false }
-            let major = components[0]
-            let minor = components.count > 1 ? components[1] : 0
-            let patch = components.count > 2 ? components[2] : 0
-            guard (0...255).contains(minor), (0...255).contains(patch) else { return false }
-            let packed = (major << 16) | (minor << 8) | patch
-            return packed >= minVersion && packed <= maxVersion
+            guard let device,
+                  let minVersion = XcodeRuntimeSetup.runtimeBound(device, "min"),
+                  let version = XcodeRuntimeSetup.runtimeVersion(runtime).flatMap({ IOSRuntimeVersion($0) }) else { return false }
+            let maxVersion = XcodeRuntimeSetup.runtimeBound(device, "max") ?? Int(UInt32.max)
+            return version.packed >= minVersion && version.packed <= maxVersion
         }
         let kinds = IOSSimulatorKind.allCases
         if let common = available.first(where: { runtime in kinds.allSatisfy { supports(runtime, kind: $0) } }),
@@ -690,11 +688,21 @@ final class IOSSimulatorRuntime: ObservableObject {
     }
 
     nonisolated static func missingRuntimeMessage(for kind: IOSSimulatorKind) -> String {
-        "\(kind.name) needs a compatible iOS Simulator runtime. Check Xcode → Settings → Components."
+        "\(kind.name) needs a compatible iOS Simulator runtime. Open File → Set Up MultiSim to check or install it."
     }
 
     private static func findOrCreateDevice(kind: IOSSimulatorKind) async throws -> String {
-        let devices = try await simctlJSON(["list", "-j", "devices"])
+        async let maximum = XcodeToolchain.simulatorSDKVersion()
+        var devices = try await simctlJSON(["list", "-j", "devices"])
+        if let maximum = await maximum, let ceiling = IOSRuntimeVersion(maximum),
+           let groups = devices["devices"] as? [String: [[String: Any]]] {
+            let prefix = XcodeRuntimeSetup.iosPrefix
+            devices["devices"] = groups.filter { id, _ in
+                guard id.hasPrefix(prefix), let version = IOSRuntimeVersion(
+                    id.dropFirst(prefix.count).replacingOccurrences(of: "-", with: ".")) else { return false }
+                return kind == .iphoneDuo ? version.release <= ceiling.release : version.major <= ceiling.major
+            }
+        }
         if let saved = UserDefaults.standard.string(forKey: kind.savedDeviceKey),
            availableDeviceType(udid: saved, in: devices) == kind.deviceTypeIdentifier {
             return saved
@@ -703,7 +711,11 @@ final class IOSSimulatorRuntime: ObservableObject {
             UserDefaults.standard.set(found, forKey: kind.savedDeviceKey)
             return found
         }
-        guard let runtimeID = await compatibleRuntimeIDs()[kind] else {
+        let inventory = try await XcodeRuntimeSetup.inventory()
+        guard let runtimeID = inventory.installed[kind] else {
+            if !inventory.supported.contains(kind) {
+                throw IOSSimulatorError.message("The selected Xcode does not support \(kind.name). Choose another version from the Xcode menu.")
+            }
             throw IOSSimulatorError.message(missingRuntimeMessage(for: kind))
         }
         let result = try await Shell.run("/usr/bin/xcrun", [
@@ -724,7 +736,7 @@ final class IOSSimulatorRuntime: ObservableObject {
         for name in ["SimLab \(kind.name)", kind.name] {
             for group in groups.values {
                 if let device = group.first(where: {
-                    ($0["isAvailable"] as? Bool) != false && ($0["name"] as? String) == name &&
+                    XcodeRuntimeSetup.isAvailable($0) && ($0["name"] as? String) == name &&
                     ($0["deviceTypeIdentifier"] as? String) == kind.deviceTypeIdentifier
                 }), let id = device["udid"] as? String {
                     return id
@@ -737,7 +749,7 @@ final class IOSSimulatorRuntime: ObservableObject {
     private static func availableDeviceType(udid: String, in json: [String: Any]) -> String? {
         let groups = json["devices"] as? [String: [[String: Any]]] ?? [:]
         return groups.values.lazy.flatMap { $0 }
-            .first { ($0["isAvailable"] as? Bool) != false && ($0["udid"] as? String) == udid }?["deviceTypeIdentifier"] as? String
+            .first { XcodeRuntimeSetup.isAvailable($0) && ($0["udid"] as? String) == udid }?["deviceTypeIdentifier"] as? String
     }
 
     private static func deviceState(udid: String, in json: [String: Any]) -> String? {
@@ -751,13 +763,7 @@ final class IOSSimulatorRuntime: ObservableObject {
     }
 
     private static func simctlJSON(_ arguments: [String]) async throws -> [String: Any] {
-        let result = try await Shell.run("/usr/bin/xcrun", ["simctl"] + arguments, timeout: 30)
-        guard result.ok else { throw IOSSimulatorError.message(result.combined) }
-        let object = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
-        guard let json = object as? [String: Any] else {
-            throw IOSSimulatorError.message("Could not read CoreSimulator device list.")
-        }
-        return json
+        try await XcodeRuntimeSetup.simctlJSON(arguments)
     }
 
     private static func run(_ arguments: [String], timeout: TimeInterval) async throws {

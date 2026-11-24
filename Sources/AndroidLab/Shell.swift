@@ -46,14 +46,17 @@ enum Shell {
         process.standardOutput = out
         process.standardError = err
 
-        if let stdin, !stdin.isEmpty {
-            let input = Pipe()
-            process.standardInput = input
-            input.fileHandleForWriting.write(Data(stdin.utf8))
-            try? input.fileHandleForWriting.close()
-        }
-
+        let input = stdin.map { _ in Pipe() }
+        if let input { process.standardInput = input }
         try process.run()
+        if let input, let stdin {
+            let writer = input.fileHandleForWriting
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { try? writer.close() }
+                try? writer.write(contentsOf: Data(stdin.utf8))
+            }
+        }
 
         var timedOut = false
         let deadline = timeout.map { DispatchTime.now() + $0 }

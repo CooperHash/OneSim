@@ -253,7 +253,7 @@ final class DuoFlipSceneView: SCNView {
 
         // Pre-warm the SceneKit drawable whenever a new surface ID arrives or while visible
         // so the very first fold frame already has compiled shaders and up-to-date textures.
-        if didBindNewTexture || isAnimating || (hingeSpring.angle > 0.5 && hingeSpring.angle < 179.5) {
+        if didBindNewTexture || isAnimating || hingeSpring.angle < 179.5 {
             setNeedsDisplay(bounds)
         }
     }
@@ -263,6 +263,7 @@ final class DuoFlipSceneView: SCNView {
     func syncPoseIfIdle(angleDegrees: Double, orientation: IOSDeviceOrientation) {
         guard !isAnimating else { return }
         let clamped = max(0, min(180, angleDegrees))
+        activeDisplay = DuoActiveDisplay.resolve(angleDegrees: clamped, current: activeDisplay)
         hingeSpring.snap(clamped)
         targetOrientation = orientation
         let quat = DuoQuaternionSpring.targetQuaternion(display: activeDisplay, orientation: orientation)
@@ -284,6 +285,7 @@ final class DuoFlipSceneView: SCNView {
         if !hasInitializedPose {
             syncPoseIfIdle(angleDegrees: clamped, orientation: orientation)
         }
+        activeDisplay = DuoActiveDisplay.resolve(angleDegrees: clamped, current: activeDisplay)
         targetOrientation = orientation
         if interactive {
             hingeSpring.snap(clamped)
@@ -322,8 +324,11 @@ final class DuoFlipSceneView: SCNView {
             rendersContinuously = visible
             isPlaying = visible
         }
-        guard display != activeDisplay else { return }
-        activeDisplay = display
+        let expectedDisplay = isAnimating
+            ? DuoActiveDisplay.resolve(angleDegrees: hingeSpring.angle, current: activeDisplay)
+            : display
+        guard expectedDisplay != activeDisplay else { return }
+        activeDisplay = expectedDisplay
         if visible {
             startAnimationLoopIfNeeded()
         } else {
@@ -437,6 +442,7 @@ final class DuoFlipSceneView: SCNView {
         lastTickTime = now
 
         let hingeSettled = hingeSpring.step(dt: dt)
+        activeDisplay = DuoActiveDisplay.resolve(angleDegrees: hingeSpring.angle, current: activeDisplay)
         let targetQuat = DuoQuaternionSpring.targetQuaternion(display: activeDisplay, orientation: targetOrientation)
         let orientationMoving = orientationSpring.step(target: targetQuat, dt: dt)
 
@@ -531,7 +537,7 @@ final class DuoFlipSceneView: SCNView {
         self.outerMaterial = Self.material(named: "YqugYDOqMSOpqyA", in: loaded.rootNode)
 
         Self.styleMaterials(in: loaded.rootNode)
-        Self.configureLighting(in: loaded.rootNode)
+        Self.configureLighting(in: loaded)
 
         let camera = SCNCamera()
         camera.fieldOfView = Self.fovDegrees
@@ -575,11 +581,23 @@ final class DuoFlipSceneView: SCNView {
                 }
             }
         }
+        var boneNodes: [String: SCNNode] = [:]
+        func collectBones(_ node: SCNNode) {
+            if let name = node.name, name != skeleton.name {
+                boneNodes[name] = node
+            }
+            for child in node.childNodes {
+                collectBones(child)
+            }
+        }
+        for child in skeleton.childNodes {
+            collectBones(child)
+        }
         var tracks: [BoneTrack] = []
         tracks.reserveCapacity(posMap.count)
         for (name, positions) in posMap {
             guard let orientations = rotMap[name],
-                  let node = (name == skeleton.name ? skeleton : skeleton.childNode(withName: name, recursively: true)) else {
+                  let node = boneNodes[name] else {
                 continue
             }
             tracks.append(BoneTrack(node: node, positions: positions, orientations: orientations))
@@ -588,12 +606,6 @@ final class DuoFlipSceneView: SCNView {
     }
 
     private static let screenMatNames: Set<String> = ["CvyXbAGXoolRUYl", "YqugYDOqMSOpqyA"]
-    private static let darkBezelMatNames: Set<String> = [
-        "PLzJQjJEDhjIwvC", "TzYENmopFAzWHxj", "KQflzzRyzmDVLKR", "HCGQGgQPyxtjDwz", "cVTxCUWyGoaEFOH",
-    ]
-    private static let decalMatNames: Set<String> = [
-        "KIZQkZTTouAhXpd", "cbPOUScIEwDvetK", "tDyevDmZRbbFVYk", "czSdVuSmHDUPduw", "UzUzwPKtObjRjQN",
-    ]
 
     private static func styleMaterials(in node: SCNNode) {
         for material in node.geometry?.materials ?? [] {
@@ -602,24 +614,8 @@ final class DuoFlipSceneView: SCNView {
                 material.lightingModel = .constant
                 material.diffuse.contents = NSColor(srgbRed: 0.04, green: 0.045, blue: 0.055, alpha: 1)
                 material.emission.contents = NSColor.black
-            } else if decalMatNames.contains(name) {
-                node.isHidden = true
-            } else if darkBezelMatNames.contains(name) {
-                material.lightingModel = .physicallyBased
-                material.diffuse.contents = NSColor(srgbRed: 0.08, green: 0.085, blue: 0.095, alpha: 1)
-                material.metalness.contents = 0.25
-                material.roughness.contents = 0.42
-                material.transparent.contents = NSColor.white
-                material.transparency = 1.0
             } else {
-                // Match safearea.info's MeshStandardMaterial({ color: 0x45484c, metalness: 0.65, roughness: 0.38 })
-                material.lightingModel = .physicallyBased
-                material.diffuse.contents = NSColor(srgbRed: 0x45 / 255.0, green: 0x48 / 255.0, blue: 0x4c / 255.0, alpha: 1)
-                material.metalness.contents = 0.65
-                material.roughness.contents = 0.38
-                material.transparent.contents = NSColor.white
                 material.transparency = 1.0
-                material.isDoubleSided = true
             }
         }
         for child in node.childNodes {
@@ -627,26 +623,43 @@ final class DuoFlipSceneView: SCNView {
         }
     }
 
-    private static func configureLighting(in rootNode: SCNNode) {
+    private static let studioEnvironmentImage: NSImage = {
+        let image = NSImage(size: NSSize(width: 256, height: 128))
+        image.lockFocus()
+        let gradient = NSGradient(colors: [
+            NSColor(srgbRed: 0.16, green: 0.18, blue: 0.23, alpha: 1),
+            NSColor(srgbRed: 0.52, green: 0.55, blue: 0.62, alpha: 1),
+            NSColor(srgbRed: 0.96, green: 0.97, blue: 1.00, alpha: 1),
+        ])!
+        gradient.draw(in: NSRect(x: 0, y: 0, width: 256, height: 128), angle: 90)
+        image.unlockFocus()
+        return image
+    }()
+
+    private static func configureLighting(in scene: SCNScene) {
+        let rootNode = scene.rootNode
+        scene.lightingEnvironment.contents = studioEnvironmentImage
+        scene.lightingEnvironment.intensity = 1.35
+
         // Hemisphere sky fill (#ffffff)
         let skyNode = SCNNode()
         let skyLight = SCNLight()
         skyLight.type = .directional
         skyLight.color = NSColor.white
-        skyLight.intensity = 900
+        skyLight.intensity = 850
         skyNode.light = skyLight
-        skyNode.position = SCNVector3(0, 40, 20)
+        skyNode.position = SCNVector3(0, 40, 25)
         skyNode.look(at: SCNVector3Zero)
         rootNode.addChildNode(skyNode)
 
-        // Hemisphere ground bounce (#363d50)
+        // Hemisphere ground bounce & rear rim fill so the back cover and camera plateau stay sculptural
         let groundNode = SCNNode()
         let groundLight = SCNLight()
         groundLight.type = .directional
-        groundLight.color = NSColor(srgbRed: 0x36 / 255.0, green: 0x3d / 255.0, blue: 0x50 / 255.0, alpha: 1)
-        groundLight.intensity = 650
+        groundLight.color = NSColor(srgbRed: 0.55, green: 0.60, blue: 0.72, alpha: 1)
+        groundLight.intensity = 700
         groundNode.light = groundLight
-        groundNode.position = SCNVector3(0, -40, -10)
+        groundNode.position = SCNVector3(-25, -30, -35)
         groundNode.look(at: SCNVector3Zero)
         rootNode.addChildNode(groundNode)
 
@@ -654,8 +667,8 @@ final class DuoFlipSceneView: SCNView {
         let ambNode = SCNNode()
         let ambLight = SCNLight()
         ambLight.type = .ambient
-        ambLight.color = NSColor(srgbRed: 0.65, green: 0.68, blue: 0.74, alpha: 1)
-        ambLight.intensity = 450
+        ambLight.color = NSColor(srgbRed: 0.72, green: 0.75, blue: 0.80, alpha: 1)
+        ambLight.intensity = 380
         ambNode.light = ambLight
         rootNode.addChildNode(ambNode)
 
@@ -664,7 +677,7 @@ final class DuoFlipSceneView: SCNView {
         let keyLight = SCNLight()
         keyLight.type = .directional
         keyLight.color = NSColor.white
-        keyLight.intensity = 1600
+        keyLight.intensity = 1350
         keyNode.light = keyLight
         keyNode.position = SCNVector3(20, 30, 40)
         keyNode.look(at: SCNVector3Zero)

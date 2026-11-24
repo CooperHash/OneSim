@@ -159,9 +159,28 @@ final class ProvisioningTests: XCTestCase {
         }
         XCTAssertTrue(AndroidRepository.listImages(paths: paths).isEmpty)
         XCTAssertTrue(DependencySetup.hasPackage(try XCTUnwrap(DependencySetup.packages.last), paths: paths))
-        let devices = AndroidRepository.listDevices(paths: paths)
+        let devices = AndroidRepository.deviceInventory(paths: paths).devices
         XCTAssertEqual(AndroidRepository.preferredWorkspaceDevice(devices, paths: paths)?.id, "03-phone")
         XCTAssertEqual(AndroidRepository.preferredWorkspaceDevice(devices.filter { $0.isFoldable }, paths: paths)?.id, "02-fold")
+    }
+
+    func testArchiveVerificationUsesPartOrderAndChecksTheFinalDigest() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: root) }
+        let package = DependencySetup.Package(id: "fixture", name: "fixture", archive: root,
+            bytes: 3, sha1: "a9993e364706816aba3e25717850c26c9cd0d89d", archiveDirectory: "fixture")
+        let first = root.appendingPathComponent("part-0")
+        let second = root.appendingPathComponent("part-1")
+        try Data("ab".utf8).write(to: first)
+        try Data("c".utf8).write(to: second)
+        let archive = try DependencySetup.verifiedArchive(parts: [first, second], staging: root, package: package)
+        XCTAssertEqual(try Data(contentsOf: archive), Data("abc".utf8))
+        XCTAssertFalse(fm.fileExists(atPath: first.path))
+        XCTAssertEqual(try DependencySetup.verifiedArchive(parts: [archive], staging: root, package: package), archive)
+        try Data("abd".utf8).write(to: archive)
+        XCTAssertThrowsError(try DependencySetup.verifiedArchive(parts: [archive], staging: root, package: package))
     }
 
     func testDefaultAVDCreatesBootConfigurationWithoutAndroidCLI() async throws {
@@ -181,7 +200,7 @@ final class ProvisioningTests: XCTestCase {
         XCTAssertEqual(config["hw.ramSize"], "3072")
         XCTAssertEqual(config["image.sysdir.1"], DependencySetup.packages[2].id + "/")
         XCTAssertEqual(config["PlayStore.enabled"], "false")
-        XCTAssertEqual(AndroidRepository.listDevices(paths: paths).map(\.id), [device.id])
+        XCTAssertEqual(AndroidRepository.deviceInventory(paths: paths).devices.map(\.id), [device.id])
     }
 
     func testManagedImageBootsAndSavesQuickBootCheckpoint() async throws {

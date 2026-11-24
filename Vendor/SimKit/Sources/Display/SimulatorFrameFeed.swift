@@ -46,18 +46,40 @@ public final class SimulatorFrameFeed {
     self.framebuffer = framebuffer
   }
 
+  private var triedHardwareKeyboard = false
+
+  /// Use the same host keyboard type that SimulatorKit reports for this Mac.
+  public func connectHardwareKeyboard() {
+    guard !triedHardwareKeyboard else { return }
+    triedHardwareKeyboard = true
+    guard let device = resolver.resolve(udid: udid),
+          let typeSymbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "IndigoHIDGetKeyboardType") else { return }
+    let selector = NSSelectorFromString("setHardwareKeyboardEnabled:keyboardType:error:")
+    guard device.responds(to: selector), let method = device.method(for: selector) else { return }
+    typealias SetKeyboard = @convention(c) (NSObject, Selector, Bool, UInt8, UnsafeMutablePointer<NSError?>?) -> Bool
+    let hostType = unsafeBitCast(typeSymbol, to: (@convention(c) () -> UInt8).self)()
+    let connected = unsafeBitCast(method, to: SetKeyboard.self)(device, selector, true, hostType, nil)
+    // SimLab interprets the host input method before emitting US-layout HID usages.
+    // A guest IME would otherwise compose the same keystrokes a second time.
+    let language = NSSelectorFromString("setKeyboardLanguage:error:")
+    if connected, device.responds(to: language), let select = device.method(for: language) {
+      typealias SetLanguage = @convention(c) (NSObject, Selector, NSString, UnsafeMutablePointer<NSError?>?) -> Bool
+      _ = unsafeBitCast(select, to: SetLanguage.self)(device, language, "en_US", nil)
+    }
+  }
+
   func makeInput() -> HIDInput {
     HIDInput(udid: udid, resolver: resolver, runtime: runtime)
   }
 
-  func observeActiveSurfaces(_ observer: @escaping @MainActor (IOSurface) -> Void) -> UUID {
+  public func observeActiveSurfaces(_ observer: @escaping @MainActor (IOSurface) -> Void) -> UUID {
     let id = UUID()
     observers[id] = observer
     activeSurfaces.values.forEach(observer)
     return id
   }
 
-  func removeObserver(_ id: UUID) {
+  public func removeObserver(_ id: UUID) {
     observers[id] = nil
   }
 

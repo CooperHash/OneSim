@@ -63,7 +63,7 @@ public struct KeyboardKey: Equatable, Hashable, Sendable {
       "Minus": 0x2D, "Equal": 0x2E, "BracketLeft": 0x2F, "BracketRight": 0x30,
       "Backslash": 0x31, "Semicolon": 0x33, "Quote": 0x34, "Backquote": 0x35,
       "Comma": 0x36, "Period": 0x37, "Slash": 0x38,
-      "ArrowRight": 0x4F, "ArrowLeft": 0x50, "ArrowDown": 0x51, "ArrowUp": 0x52,
+      "Delete": 0x4C, "ArrowRight": 0x4F, "ArrowLeft": 0x50, "ArrowDown": 0x51, "ArrowUp": 0x52,
     ]
     for (i, c) in "ABCDEFGHIJKLMNOPQRSTUVWXYZ".enumerated() {
       m["Key\(c)"] = UInt32(0x04 + i)

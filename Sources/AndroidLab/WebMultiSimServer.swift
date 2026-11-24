@@ -4,31 +4,38 @@ import NIOHTTP1
 import NIOPosix
 import NIOWebSocket
 
-/// A listener on one exact address. LAN listeners require a per-session key
+/// A listener for one browser origin. Shared listeners require a per-session key
 /// before joining the stream or receiving any simulator controls.
 final class WebMultiSimServer: @unchecked Sendable {
     static let port = 8080
     static let address = URL(string: "http://127.0.0.1:\(port)")!
     let address: URL
-    private let bindAddress: String
-    private let port: Int
+    private var browserOrigin: URL?
     private let accessKey: String?
     private let onInput: @Sendable (UUID, WebInputCommand?) -> Void
 
     init(bindAddress: String = "127.0.0.1", port: Int = WebMultiSimServer.port,
          accessKey: String? = nil, onInput: @escaping @Sendable (UUID, WebInputCommand?) -> Void = { _, _ in }) {
-        self.bindAddress = bindAddress
-        self.port = port
         self.accessKey = accessKey
         self.onInput = onInput
         address = URL(string: "http://\(bindAddress):\(port)")!
+        browserOrigin = address
     }
 
-    private var host: String { "\(bindAddress):\(port)" }
+    convenience init(tunnelKey: String, onInput: @escaping @Sendable (UUID, WebInputCommand?) -> Void) {
+        self.init(bindAddress: "127.0.0.1", port: 0, accessKey: tunnelKey, onInput: onInput)
+        browserOrigin = nil
+    }
+
+    func acceptPublicOrigin(_ origin: URL) {
+        guard address.port == 0, accessKey != nil, CloudflareQuickTunnel.origin(in: origin.absoluteString) == origin else { return }
+        lock.withLock { if !stopped && browserOrigin == nil { browserOrigin = origin } }
+    }
 
     var shareURL: URL {
-        guard let accessKey else { return address }
-        var components = URLComponents(url: address, resolvingAgainstBaseURL: false)!
+        let origin = lock.withLock { browserOrigin } ?? address
+        guard let accessKey else { return origin }
+        var components = URLComponents(url: origin, resolvingAgainstBaseURL: false)!
         components.fragment = "key=" + accessKey
         return components.url!
     }
@@ -47,28 +54,34 @@ final class WebMultiSimServer: @unchecked Sendable {
     private var listener: Channel?
     private var stopped = false
 
-    func start() async throws {
+    @discardableResult
+    func start() async throws -> Int {
         let channel = try await ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .childChannelOption(ChannelOptions.writeBufferWaterMark, value: .init(low: 128_000, high: 512_000))
-            .childChannelInitializer { channel in
-                guard self.registerConnection(channel) else { return channel.close() }
-                let http = HTTPPage(host: self.host, requiresKey: self.accessKey != nil)
+            .childChannelOption(ChannelOptions.socketOption(.tcp_nodelay), value: 1)
+            .childChannelOption(ChannelOptions.writeBufferWaterMark, value: .init(low: 32_768, high: 131_072))
+            .childChannelInitializer { [self] channel in
+                guard self.registerConnection(channel),
+                      let origin = self.lock.withLock({ self.browserOrigin }),
+                      let hostname = origin.host else { return channel.close() }
+                let host = hostname + (origin.port.map { ":\($0)" } ?? "")
+                let webSocketOrigin = (origin.scheme == "https" ? "wss://" : "ws://") + host
+                let http = HTTPPage(host: host, webSocketOrigin: webSocketOrigin, requiresKey: self.accessKey != nil)
                 let upgrader = NIOWebSocketServerUpgrader(
                     maxFrameSize: 4096,
                     shouldUpgrade: { channel, request in
                         let protocols = request.headers["sec-websocket-protocol"]
                             .flatMap { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } }
                         guard request.uri == "/stream",
-                              request.headers["host"] == [self.host],
-                              request.headers["origin"] == [self.address.absoluteString],
+                              request.headers["host"] == [host],
+                              request.headers["origin"] == [origin.absoluteString],
                               self.accessKey.map({ protocols.contains("key." + $0) && protocols.contains("simlab") }) ?? true
                         else { return channel.eventLoop.makeSucceededFuture(nil) }
                         let headers = protocols.contains("simlab")
                             ? HTTPHeaders([("Sec-WebSocket-Protocol", "simlab")]) : HTTPHeaders()
                         return channel.eventLoop.makeSucceededFuture(headers)
                     },
-                    upgradePipelineHandler: { channel, request in
+                    upgradePipelineHandler: { [self] channel, request in
                         let acceptsVideo = request.headers["sec-websocket-protocol"].contains(where: {
                             $0.split(separator: ",").contains { $0.trimmingCharacters(in: .whitespaces) == "simlab.avc" }
                         })
@@ -88,11 +101,12 @@ final class WebMultiSimServer: @unchecked Sendable {
                     completionHandler: { context in _ = context.pipeline.removeHandler(http) }
                 )).flatMap { channel.pipeline.addHandler(http) }
             }
-            .bind(host: bindAddress, port: port).get()
-        if !storeListener(channel) {
+            .bind(host: address.host!, port: address.port!).get()
+        guard let port = channel.localAddress?.port, storeListener(channel) else {
             channel.close(promise: nil)
             throw CancellationError()
         }
+        return port
     }
 
     var hasViewers: Bool {
@@ -279,9 +293,11 @@ final class WebMultiSimServer: @unchecked Sendable {
         typealias OutboundOut = HTTPServerResponsePart
         private let host: String
         private let requiresKey: Bool
+        private let webSocketOrigin: String
 
-        init(host: String, requiresKey: Bool) {
+        init(host: String, webSocketOrigin: String, requiresKey: Bool) {
             self.host = host
+            self.webSocketOrigin = webSocketOrigin
             self.requiresKey = requiresKey
         }
 
@@ -295,7 +311,7 @@ final class WebMultiSimServer: @unchecked Sendable {
                 ("Content-Type", type), ("Content-Length", String(content.count)),
                 ("Connection", "close"), ("Cache-Control", request.uri.hasPrefix("/assets/") ? "private, max-age=86400" : "no-store"),
                 ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
-                ("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src 'self' blob: ws://\(host); form-action 'none'; frame-ancestors 'none'"),
+                ("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; connect-src 'self' blob: \(webSocketOrigin); form-action 'none'; frame-ancestors 'none'"),
             ])
             context.write(wrapOutboundOut(.head(.init(version: request.version, status: status, headers: headers))), promise: nil)
             var body = context.channel.allocator.buffer(capacity: content.count)

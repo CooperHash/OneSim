@@ -77,6 +77,16 @@ if [ "${SIMLAB_BUNDLE_ANDROID_SDK:-0}" = "1" ]; then
     tools/bundle-sdk.sh "$STAGING/Contents/Resources/AndroidSDK"
 fi
 
+# Include the tunnel helper and its license in portable builds when installed.
+for prefix in /opt/homebrew/opt/cloudflared /usr/local/opt/cloudflared; do
+    if [ -x "$prefix/bin/cloudflared" ] && [ -f "$prefix/LICENSE" ]; then
+        mkdir -p "$STAGING/Contents/Helpers" "$STAGING/Contents/Resources/Licenses/cloudflared"
+        cp "$prefix/bin/cloudflared" "$STAGING/Contents/Helpers/cloudflared"
+        cp "$prefix/LICENSE" "$STAGING/Contents/Resources/Licenses/cloudflared/"
+        break
+    fi
+done
+
 cat > "$STAGING/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

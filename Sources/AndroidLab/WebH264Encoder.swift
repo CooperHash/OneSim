@@ -31,7 +31,7 @@ final class WebH264Encoder: @unchecked Sendable {
             dimensions = target
             forceKey = true
         }
-        guard let session, let buffer = pixelBuffer(source, width: width, height: height) else { return nil }
+        guard let session, let buffer = pixelBuffer(source, session: session, width: width, height: height) else { return nil }
 
         sequence &+= 1
         let timestamp = CMTime(value: Int64(sequence), timescale: 60)
@@ -53,7 +53,7 @@ final class WebH264Encoder: @unchecked Sendable {
         if let session { VTCompressionSessionInvalidate(session) }
     }
 
-    private func pixelBuffer(_ source: WebFrameSource, width: Int, height: Int) -> CVPixelBuffer? {
+    private func pixelBuffer(_ source: WebFrameSource, session: VTCompressionSession, width: Int, height: Int) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
         switch source {
         case .ios(let surface):
@@ -65,9 +65,15 @@ final class WebH264Encoder: @unchecked Sendable {
             surfaceBuffer = (id, buffer)
             return buffer
         case .android(let image, _):
-            let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
-            guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-                                      attributes, &buffer) == kCVReturnSuccess, let buffer else { return nil }
+            if let pool = VTCompressionSessionGetPixelBufferPool(session) {
+                _ = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer)
+            }
+            if buffer == nil {
+                let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+                _ = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                                        attributes, &buffer)
+            }
+            guard let buffer else { return nil }
             let frame = CIImage(cgImage: image).transformed(by: CGAffineTransform(
                 scaleX: CGFloat(width) / CGFloat(image.width), y: CGFloat(height) / CGFloat(image.height)
             ))
@@ -79,19 +85,30 @@ final class WebH264Encoder: @unchecked Sendable {
     private static func createSession(width: Int, height: Int) -> VTCompressionSession? {
         var session: VTCompressionSession?
         let specification = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: kCFBooleanTrue] as CFDictionary
+        let bufferAttributes: [CFString: Any] = [
+            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey: width,
+            kCVPixelBufferHeightKey: height,
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+        ]
         let status = VTCompressionSessionCreate(allocator: kCFAllocatorDefault,
             width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_H264,
-            encoderSpecification: specification, imageBufferAttributes: nil, compressedDataAllocator: nil,
-            outputCallback: nil, refcon: nil, compressionSessionOut: &session)
+            encoderSpecification: specification, imageBufferAttributes: bufferAttributes as CFDictionary,
+            compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &session)
         guard status == noErr, let session else { return nil }
+        let averageBitRate = 1_650_000
+        let dataRateLimits = [averageBitRate * 3 / 2 / 8, 1] as CFArray
         let properties: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: kCFBooleanTrue as Any,
             kVTCompressionPropertyKey_AllowFrameReordering: kCFBooleanFalse as Any,
+            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality: kCFBooleanTrue as Any,
             kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_Baseline_AutoLevel,
             kVTCompressionPropertyKey_MaxFrameDelayCount: 0,
-            kVTCompressionPropertyKey_MaxKeyFrameInterval: 60,
+            kVTCompressionPropertyKey_MaxKeyFrameInterval: 90,
+            kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 1.5,
             kVTCompressionPropertyKey_ExpectedFrameRate: 60,
-            kVTCompressionPropertyKey_AverageBitRate: 2_800_000,
+            kVTCompressionPropertyKey_AverageBitRate: averageBitRate,
+            kVTCompressionPropertyKey_DataRateLimits: dataRateLimits,
         ]
         for (key, value) in properties { VTSessionSetProperty(session, key: key, value: value as CFTypeRef) }
         guard VTCompressionSessionPrepareToEncodeFrames(session) == noErr else {

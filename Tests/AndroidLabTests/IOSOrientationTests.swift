@@ -87,5 +87,17 @@ final class IOSOrientationTests: XCTestCase {
             XCTAssertEqual(outerHit.x, 0.45, accuracy: 0.15)
             XCTAssertEqual(outerHit.y, 0.50, accuracy: 0.05)
         }
+
+        view.finish()
+        view.updateDisplay(.outer, visible: true)
+        view.syncPoseIfIdle(angleDegrees: 0, orientation: .portrait)
+        _ = view.snapshot()
+
+        let closedOuterHit = view.digitizerPoint(at: CGPoint(x: 400, y: 360), for: .outer)
+        XCTAssertNotNil(closedOuterHit)
+        if let closedOuterHit {
+            XCTAssertEqual(closedOuterHit.x, 0.50, accuracy: 0.12)
+            XCTAssertEqual(closedOuterHit.y, 0.50, accuracy: 0.06)
+        }
     }
 }

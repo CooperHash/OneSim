@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import SimKit
 
 enum IOSDeviceOrientation: String {
@@ -123,6 +123,12 @@ final class IOSSimulatorRuntime: ObservableObject {
     weak var flipRenderer: DuoFlipSceneView? {
         didSet {
             flipRenderer?.onSettled = { [weak self] _ in self?.evaluate3DPoseVisibility() }
+            if let framebufferFeed, kind == .iphoneDuo {
+                if let flipSurfaceObserver { framebufferFeed.removeObserver(flipSurfaceObserver) }
+                flipSurfaceObserver = framebufferFeed.observeActiveSurfaces { [weak self] surface in
+                    self?.flipRenderer?.receive(surface: surface)
+                }
+            }
             if is3DPoseActive {
                 _ = flipRenderer?.transitionTo(angleDegrees: duoHingeAngle, orientation: orientation, interactive: true)
             } else {
@@ -142,19 +148,73 @@ final class IOSSimulatorRuntime: ObservableObject {
         didSet { pointerView?.screen = screenView }
     }
 
+    private let keyboardQueue = SimulatorKeyboardQueue()
+
+    @discardableResult
+    func focusMacKeyboard(in view: NSView, at point: NSPoint) -> MacSimulatorKeyboard? {
+        framebufferFeed?.connectHardwareKeyboard()
+        return MacSimulatorKeyboard.focus(in: view, at: point) { [weak self] input in
+            self?.sendKeyboard(input)
+        }
+    }
+
+    func sendKeyboard(_ input: SimulatorKeyboardInput) {
+        guard let udid, let screen = screenView, state == .running else { return }
+        framebufferFeed?.connectHardwareKeyboard()
+        keyboardQueue.submit { [weak self, weak screen] in
+            guard let self, let screen, self.screenView === screen, self.udid == udid, self.state == .running else { return }
+            let key: KeyboardKey?
+            let modifiers: Set<KeyModifier>
+            switch input {
+            case .key(let editingKey, let shift):
+                key = KeyboardKey.from(wireCode: editingKey.rawValue)
+                modifiers = shift ? [.shift] : []
+            case .selectAll:
+                key = KeyboardKey.from(wireCode: "KeyA")
+                modifiers = [.command]
+            case .text(let text):
+                if text.count == 1, let letter = text.first, let pair = KeyboardKey.decompose(character: letter) {
+                    key = pair.key
+                    modifiers = pair.modifiers
+                } else {
+                    guard !text.isEmpty else { return }
+                    do {
+                        let result = try await Shell.run("/usr/bin/xcrun", ["simctl", "pbcopy", udid], stdin: text, timeout: 5)
+                        guard result.ok else { throw AndroidLabError.message("Simulator pasteboard unavailable.") }
+                    } catch { NSSound.beep(); return }
+                    guard self.screenView === screen, self.udid == udid, self.state == .running else { return }
+                    key = KeyboardKey.from(wireCode: "KeyV")
+                    modifiers = [.command]
+                }
+            }
+            if let key, !screen.sendKey(key, modifiers: modifiers, duration: 0.001) { NSSound.beep() }
+        }
+    }
+
     private var framebufferFeed: SimulatorFrameFeed?
+    private var flipSurfaceObserver: UUID?
 
     func frameFeed() throws -> SimulatorFrameFeed {
         guard let udid else { throw SimKitError.deviceNotFound(udid: kind.name) }
         if let framebufferFeed, framebufferFeed.udid == udid { return framebufferFeed }
+        if let flipSurfaceObserver { framebufferFeed?.removeObserver(flipSurfaceObserver) }
+        flipSurfaceObserver = nil
         framebufferFeed?.stop()
         let feed = try SimulatorFrameFeed(udid: udid)
         if let isDuoInnerPanelActive { feed.preferInnerDisplay(isDuoInnerPanelActive) }
+        if kind == .iphoneDuo {
+            flipSurfaceObserver = feed.observeActiveSurfaces { [weak self] surface in
+                self?.flipRenderer?.receive(surface: surface)
+            }
+        }
         framebufferFeed = feed
         return feed
     }
 
     private func releaseFrameFeed() {
+        keyboardQueue.reset()
+        if let flipSurfaceObserver { framebufferFeed?.removeObserver(flipSurfaceObserver) }
+        flipSurfaceObserver = nil
         framebufferFeed?.stop()
         framebufferFeed = nil
         screenView = nil
@@ -250,7 +310,7 @@ final class IOSSimulatorRuntime: ObservableObject {
             angleDegrees: clamped, current: confirmedDuoPanel?.display ?? (clamped <= 45 ? .outer : .inner)
         )
         hasSyncedInitialDuoAngle = true
-        let midPose = clamped > 0.5 && clamped < 179.5
+        let midPose = clamped < 179.5
         is3DPoseActive = midPose
         if midPose {
             _ = flipRenderer?.transitionTo(angleDegrees: clamped, orientation: orientation, interactive: true)
@@ -389,9 +449,11 @@ final class IOSSimulatorRuntime: ObservableObject {
         let from = lastCommandedHingeAngle
         if confirmedDuoPanel?.display != request.display {
             confirmedDuoPanel = nil
+            framebufferFeed?.preferInnerDisplay(request.display == .inner)
+            screenView?.preferDuoPanel(isInner: request.display == .inner)
         }
         if !request.interactive, abs(from - request.angle) > 2 {
-            let duration = String(format: "%.2f", max(0.22, min(0.50, Double(abs(from - request.angle)) / 360)))
+            let duration = String(format: "%.2f", max(0.18, min(0.38, Double(abs(from - request.angle)) / 420)))
             let result = try await Shell.run(
                 script, ["-d", udid, "sweep", String(from), String(request.angle), duration], timeout: 8
             )
@@ -409,13 +471,15 @@ final class IOSSimulatorRuntime: ObservableObject {
             guard try await waitForDuoPanel(.inner, udid: udid) else { return }
         }
         guard !Task.isCancelled, pendingHingeRequest == nil else { return }
-        try await setHingeAngle(request.angle, script: script, udid: udid, interactive: request.interactive)
+        if lastCommandedHingeAngle != request.angle || request.interactive {
+            try await setHingeAngle(request.angle, script: script, udid: udid, interactive: request.interactive)
+        }
         _ = try await waitForDuoPanel(request.display, udid: udid)
     }
 
     private func setHingeAngle(_ angle: Int, script: String, udid: String, interactive: Bool = false) async throws {
         let result = try await Shell.run(
-            script, ["-d", udid, "-t", interactive ? "0" : "1.5", "set", String(angle)], timeout: 8
+            script, ["-d", udid, "-t", interactive ? "0" : "0.6", "set", String(angle)], timeout: 8
         )
         guard result.ok else { throw IOSSimulatorError.message(result.combined) }
         lastCommandedHingeAngle = angle
@@ -433,16 +497,16 @@ final class IOSSimulatorRuntime: ObservableObject {
             if ContinuousClock.now >= deadline {
                 throw IOSSimulatorError.message("The simulator did not light the \(display.title.lowercased()).")
             }
-            try await Task.sleep(for: .milliseconds(100))
+            try await Task.sleep(for: .milliseconds(60))
         }
         return false
     }
 
     private func evaluate3DPoseVisibility() {
         guard kind == .iphoneDuo else { return }
-        let atEndpoint = duoHingeAngle <= 0.5 || duoHingeAngle >= 179.5
+        let atFlatOpenEndpoint = duoHingeAngle >= 179.5
         let rendererBusy = flipRenderer?.isAnimating == true
-        if flipRenderer?.canAnimate != true || (atEndpoint && !rendererBusy && !isChangingHinge && !isRotating) {
+        if flipRenderer?.canAnimate != true || (atFlatOpenEndpoint && !rendererBusy && !isChangingHinge && !isRotating) {
             flipRenderer?.finish()
             is3DPoseActive = false
         } else {
@@ -509,12 +573,25 @@ final class IOSSimulatorRuntime: ObservableObject {
 
     /// CoreSimulator devices can be shut down outside SimLab (for example from Xcode).
     /// Keep the workspace state in sync without blocking the main actor.
-    func refreshBootState() async {
-        guard state == .running, startTask == nil, let udid,
-              Date().timeIntervalSince(lastBootStateCheck) >= 6 else { return }
-        lastBootStateCheck = Date()
-        guard let devices = try? await Self.simctlJSON(["list", "-j", "devices"]) else { return }
-        if Self.deviceState(udid: udid, in: devices) != "Booted" {
+    static func refreshBootStates(_ runtimes: [IOSSimulatorRuntime]) async {
+        let targets = runtimes.compactMap { runtime -> (IOSSimulatorRuntime, String)? in
+            guard runtime.state == .running, runtime.startTask == nil, let udid = runtime.udid else { return nil }
+            return (runtime, udid)
+        }
+        let now = Date()
+        guard targets.contains(where: { now.timeIntervalSince($0.0.lastBootStateCheck) >= 6 }) else { return }
+        for (runtime, _) in targets { runtime.lastBootStateCheck = now }
+        guard let devices = try? await simctlJSON(["list", "-j", "devices"]),
+              devices["devices"] is [String: [[String: Any]]] else { return }
+        for (runtime, udid) in targets {
+            await runtime.refreshBootState(udid: udid, booted: deviceState(udid: udid, in: devices) == "Booted")
+        }
+    }
+
+    private func refreshBootState(udid: String, booted: Bool) async {
+        guard self.udid == udid, state == .running, startTask == nil else { return }
+        if !booted {
+            releaseFrameFeed()
             state = .stopped
             is3DPoseActive = false
             flipRenderer?.finish()
@@ -523,7 +600,8 @@ final class IOSSimulatorRuntime: ObservableObject {
             memoryFootprint = nil
             disabledServices = nil
             managedServices = nil
-        } else if !isRotating, let current = await Self.readOrientation(udid: udid) {
+        } else if !isRotating, let current = await Self.readOrientation(udid: udid),
+                  self.udid == udid, state == .running, !isRotating {
             if current != orientation {
                 orientation = current
                 if kind == .iphoneDuo && is3DPoseActive {

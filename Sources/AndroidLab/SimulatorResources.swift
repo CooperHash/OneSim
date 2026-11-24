@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -12,14 +13,17 @@ enum SimulatorResourceTarget {
     }
 }
 
-struct SimulatorResourceUsage {
+struct SimulatorResourceUsage: Equatable {
     let processCount: Int
+    let measuredProcessCount: Int
     let memoryBytes: Int64
     /// Sum of macOS process %CPU values; multicore simulators can exceed 100%.
     let cpuPercent: Double
 
     var memoryLabel: String {
-        ByteCountFormatter.string(fromByteCount: memoryBytes, countStyle: .memory)
+        guard measuredProcessCount > 0 else { return "—" }
+        let value = ByteCountFormatter.string(fromByteCount: memoryBytes, countStyle: .memory)
+        return measuredProcessCount == processCount ? value : "≥" + value
     }
 }
 
@@ -29,12 +33,13 @@ final class SimulatorResourceMonitor: ObservableObject {
 
     func refresh(_ targets: [SimulatorResourceTarget]) async {
         guard !targets.isEmpty else {
-            readings = [:]
+            if !readings.isEmpty { readings = [:] }
             return
         }
         let result = try? await SimulatorResourceSampler.sample(targets)
         guard !Task.isCancelled else { return }
-        readings = result ?? [:]
+        let next = result ?? [:]
+        if readings != next { readings = next }
     }
 }
 
@@ -53,12 +58,11 @@ struct SimulatorResourceBadge: View {
         }
         .font(.system(size: 10, weight: .medium, design: .monospaced))
         .foregroundStyle(.secondary)
-        .help("Host CPU and summed process memory for this simulator; refreshed every 5 seconds. CPU may exceed 100% on multiple cores.")
+        .help("Host CPU and summed process memory for this simulator; refreshed every 5 seconds. CPU may exceed 100% on multiple cores. ≥ marks a partial RAM reading.")
     }
 }
 
-/// One host-wide ps/top sweep feeds every visible simulator, avoiding one top
-/// process per device. Memory uses top's phys_footprint, matching Activity Monitor.
+/// Take one process tree snapshot, then read physical footprint only for the target descendants.
 enum SimulatorResourceSampler {
     static func sample(_ targets: [SimulatorResourceTarget]) async throws -> [String: SimulatorResourceUsage] {
         let endpoints = AndroidRepository.runningEndpoints()
@@ -76,30 +80,39 @@ enum SimulatorResourceSampler {
         }
         guard !roots.isEmpty else { return [:] }
 
-        async let processResult = Shell.run("/bin/ps", ["-axo", "pid,ppid,%cpu"], timeout: 10)
-        async let memoryResult = Shell.run("/usr/bin/top", ["-l", "1", "-stats", "pid,mem"], timeout: 15)
-        let processes = try await processResult
-        let memory = try await memoryResult
-        guard processes.ok, memory.ok else { return [:] }
-
+        let processes = try await Shell.run("/bin/ps", ["-axo", "pid,ppid,%cpu"], timeout: 10)
+        guard processes.ok else { return [:] }
         let (children, cpu) = parseProcesses(processes.stdout)
-        let bytes = parseMemory(memory.stdout)
-        return roots.reduce(into: [:]) { result, entry in
-            let (key, root) = entry
-            var visited: Set<Int> = []
+        return roots.compactMapValues { root in
+            guard cpu[root] != nil else { return nil }
             var stack = [root]
-            var usage = SimulatorResourceUsage(processCount: 0, memoryBytes: 0, cpuPercent: 0)
+            var visited: Set<Int> = []
+            var totalCPU = 0.0
+            var totalBytes: Int64 = 0
+            var measured = 0
             while let pid = stack.popLast() {
-                guard visited.insert(pid).inserted, cpu[pid] != nil else { continue }
-                usage = SimulatorResourceUsage(
-                    processCount: usage.processCount + 1,
-                    memoryBytes: usage.memoryBytes + (bytes[pid] ?? 0),
-                    cpuPercent: usage.cpuPercent + (cpu[pid] ?? 0)
-                )
+                guard visited.insert(pid).inserted else { continue }
+                totalCPU += cpu[pid] ?? 0
+                if let bytes = physicalFootprint(pid: pid) {
+                    totalBytes += bytes
+                    measured += 1
+                }
                 stack.append(contentsOf: children[pid] ?? [])
             }
-            if usage.processCount > 0 { result[key] = usage }
+            return SimulatorResourceUsage(processCount: visited.count, measuredProcessCount: measured,
+                                          memoryBytes: totalBytes, cpuPercent: totalCPU)
         }
+    }
+
+    static func physicalFootprint(pid: Int) -> Int64? {
+        guard let pid = Int32(exactly: pid), pid > 0 else { return nil }
+        var usage = rusage_info_v0()
+        let result = withUnsafeMutablePointer(to: &usage) { pointer in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(pid, RUSAGE_INFO_V0, $0)
+            }
+        }
+        return result == 0 ? Int64(usage.ri_phys_footprint) : nil
     }
 
     static func parseProcesses(_ output: String) -> ([Int: [Int]], [Int: Double]) {
@@ -116,29 +129,4 @@ enum SimulatorResourceSampler {
         return (children, cpu)
     }
 
-    static func parseMemory(_ output: String) -> [Int: Int64] {
-        var bytes: [Int: Int64] = [:]
-        for line in output.split(separator: "\n") {
-            let fields = line.split(whereSeparator: \.isWhitespace)
-            guard fields.count >= 2, let pid = Int(fields[0]),
-                  let value = memoryBytes(String(fields[1])) else { continue }
-            bytes[pid] = value
-        }
-        return bytes
-    }
-
-    static func memoryBytes(_ raw: String) -> Int64? {
-        let value = raw.trimmingCharacters(in: CharacterSet(charactersIn: "+"))
-        guard let suffix = value.last else { return nil }
-        let multiplier: Double
-        switch suffix {
-        case "K": multiplier = 1_024
-        case "M": multiplier = 1_048_576
-        case "G": multiplier = 1_073_741_824
-        case "B": multiplier = 1
-        default: return Int64(value)
-        }
-        guard let number = Double(value.dropLast()) else { return nil }
-        return Int64(number * multiplier)
-    }
 }

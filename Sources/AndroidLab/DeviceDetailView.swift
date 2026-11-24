@@ -165,7 +165,8 @@ struct DeviceDetailView: View {
                     onTap: { model.tap($0, $1) },
                     onSwipe: { model.swipe($0, $1, $2, $3, $4) },
                     onLongPress: { model.swipe($0, $1, $0, $1, 720) },
-                    onTouch: { model.touch(deviceID: device.id, x: $0, y: $1, phase: $2) }
+                    onTouch: { model.touch(deviceID: device.id, x: $0, y: $1, phase: $2) },
+                    onKeyboard: { model.sendKeyboard($0, to: device.id) }
                 )
                 if runtime.state == .booting || runtime.state == .starting {
                     VStack {
@@ -230,7 +231,7 @@ struct DeviceDetailView: View {
                         .frame(width: 260)
                         .onSubmit(sendText)
                     HStack {
-                        Text("ASCII only. Use the on-screen keyboard for other languages.")
+                        Text("You can also click the simulator and type with your Mac keyboard.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -312,6 +313,7 @@ struct DeviceStage: View {
     let onSwipe: (Int, Int, Int, Int, Int) -> Void
     let onLongPress: (Int, Int) -> Void
     var onTouch: ((Int, Int, TouchPhase) -> Bool)? = nil
+    var onKeyboard: ((SimulatorKeyboardInput) -> Void)?
     var zoom: CGFloat = 1
     var pairedPhoneScreenHeight: CGFloat? = nil
     var frameStore: ScreenFrameStore? = nil
@@ -373,7 +375,7 @@ struct DeviceStage: View {
                     .overlay(Circle().stroke(Theme.bezelHighlight, lineWidth: 2))
                     .frame(width: frameWidth, height: frameHeight)
                     .shadow(color: .black.opacity(0.55), radius: 34, y: 18)
-                ScreenSurface(image: image, onTap: onTap, onSwipe: onSwipe, onLongPress: onLongPress, onTouch: onTouch, frameStore: frameStore)
+                ScreenSurface(image: image, onTap: onTap, onSwipe: onSwipe, onLongPress: onLongPress, onTouch: onTouch, onKeyboard: onKeyboard, frameStore: frameStore)
                     .frame(width: screenWidth, height: screenHeight)
                     .clipShape(Circle())
                     .overlay(Circle().stroke(.black.opacity(0.55), lineWidth: 2).allowsHitTesting(false))
@@ -401,7 +403,7 @@ struct DeviceStage: View {
                     .allowsHitTesting(false)
                 }
 
-                ScreenSurface(image: image, onTap: onTap, onSwipe: onSwipe, onLongPress: onLongPress, onTouch: onTouch, frameStore: frameStore)
+                ScreenSurface(image: image, onTap: onTap, onSwipe: onSwipe, onLongPress: onLongPress, onTouch: onTouch, onKeyboard: onKeyboard, frameStore: frameStore)
                     .frame(width: screenWidth, height: screenHeight)
                     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                     .overlay(

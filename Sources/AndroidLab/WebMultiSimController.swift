@@ -15,7 +15,12 @@ final class WebMultiSimController: ObservableObject {
     @Published private(set) var state: State = .stopped
     @Published private(set) var lanURL: URL?
     @Published private(set) var isStartingLAN = false
-    @Published var lanError: String?
+    @Published private(set) var publicURL: URL?
+    @Published private(set) var isStartingPublic = false
+    @Published var sharingError: String?
+    private var publicServer: WebMultiSimServer?
+    private var publicTunnel: CloudflareQuickTunnel?
+    private var publicTask: Task<Void, Never>?
     @Published var lanPowerSaving = false
     private var lanServer: WebMultiSimServer?
     private var lanTask: Task<Void, Never>?
@@ -54,7 +59,7 @@ final class WebMultiSimController: ObservableObject {
                     for kind in IOSSimulatorKind.allCases where compatible.contains(kind) {
                         guard !Task.isCancelled, let runtime = model.iosRuntimes[kind] else { return }
                         runtime.start()
-                        try? await untilReady {
+                        try? await self.untilReady {
                             if case .error = runtime.state { return true }
                             return runtime.state == .running
                         }
@@ -73,7 +78,7 @@ final class WebMultiSimController: ObservableObject {
                 let clock = ContinuousClock()
                 while !Task.isCancelled {
                     let now = clock.now
-                    let servers = [server, lanServer].compactMap { $0 }
+                    let servers = [server, lanServer, publicServer].compactMap { $0 }
                     let hasViewers = servers.contains { $0.hasViewers }
                     var spinning = false
                     if hasViewers {
@@ -87,7 +92,7 @@ final class WebMultiSimController: ObservableObject {
                     } else {
                         stream.setServers(servers)
                     }
-                    try await clock.sleep(until: now + .milliseconds(hasViewers ? (spinning ? 16 : 67) : 250))
+                    try await clock.sleep(until: now + .milliseconds(hasViewers ? (spinning ? 16 : 33) : 250))
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -124,12 +129,13 @@ final class WebMultiSimController: ObservableObject {
             } catch {
                 guard !Task.isCancelled, lanServer === candidate else { return }
                 stopLAN()
-                lanError = error.localizedDescription
+                sharingError = error.localizedDescription
             }
         }
     }
 
     func stopLAN() {
+        stopPublic()
         lanTask?.cancel()
         lanTask = nil
         lanServer?.stop()
@@ -137,6 +143,52 @@ final class WebMultiSimController: ObservableObject {
         lanURL = nil
         lanPowerSaving = false
         isStartingLAN = false
+    }
+
+    func startPublic() {
+        guard state == .running, lanURL != nil, let input, publicTunnel == nil else { return }
+        let tunnel = CloudflareQuickTunnel()
+        publicTunnel = tunnel
+        isStartingPublic = true
+        sharingError = nil
+        let onInput: @Sendable (UUID, WebInputCommand?) -> Void = { [weak self, weak input, weak tunnel] client, command in
+            DispatchQueue.main.async {
+                guard command == nil || (tunnel != nil && self?.publicTunnel === tunnel) else { return }
+                input?.receive(client: client, command: command)
+            }
+        }
+        publicTask = Task {
+            do {
+                try Task.checkCancellation()
+                let key = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+                let candidate = WebMultiSimServer(tunnelKey: key, onInput: onInput)
+                self.publicServer = candidate
+                let port = try await candidate.start()
+                try Task.checkCancellation()
+                try await tunnel.run(port: port) { origin in
+                    try Task.checkCancellation()
+                    candidate.acceptPublicOrigin(origin)
+                    self.publicURL = candidate.shareURL
+                    self.isStartingPublic = false
+                }
+            } catch {
+                guard !Task.isCancelled, publicTunnel === tunnel else { return }
+                stopPublic()
+                sharingError = error.localizedDescription
+            }
+        }
+    }
+
+    func stopPublic() {
+        guard publicTunnel != nil else { return }
+        publicTask?.cancel()
+        publicTask = nil
+        publicServer?.stop()
+        publicServer = nil
+        publicTunnel?.stop()
+        publicTunnel = nil
+        publicURL = nil
+        isStartingPublic = false
     }
 
     private func makeServer(input: WebMultiSimInput, address: String = "127.0.0.1", key: String? = nil) -> WebMultiSimServer {
@@ -176,7 +228,7 @@ final class WebMultiSimController: ObservableObject {
             var status = WebDeviceStatus(panel: panel, orientation: runtime.orientation.clockwiseQuarterTurns)
             if kind == .iphoneDuo {
                 status.angle = runtime.duoHingeAngle
-                status.is3DPoseActive = (0.5..<179.5).contains(runtime.duoHingeAngle)
+                status.is3DPoseActive = runtime.duoHingeAngle < 179.5 || runtime.isChangingHinge
                 status.hingeBusy = runtime.isChangingHinge
             }
             guard let surface = feeds[kind]?.surface else {
@@ -195,7 +247,7 @@ final class WebMultiSimController: ObservableObject {
             status.rotation = turns
             if kind == .iphoneDuo { status.activeDisplay = inner ? "inner" : "outer" }
             status.revision = input.setFrame(panel: panel,
-                                              layout: runtime.isRotating || runtime.isChangingHinge ? nil : layout)
+                                              layout: runtime.isRotating ? nil : layout)
             stream.submit(status, source: .ios(surface))
         }
     }
@@ -224,6 +276,7 @@ struct WebMultiSimToolbar: View {
     let workspace: MultiSimWorkspace
     @State private var selectedLANAddress: String?
     @State private var showLANConfirmation = false
+    @State private var showPublicConfirmation = false
 
     var body: some View {
         HStack(spacing: 7) {
@@ -254,6 +307,7 @@ struct WebMultiSimToolbar: View {
                 }
                 .help("Copy local address")
                 lanMenu
+                if web.lanURL != nil { publicMenu }
                 Button("Stop") { web.stop() }
             }
         }
@@ -266,13 +320,38 @@ struct WebMultiSimToolbar: View {
         } message: {
             Text("Anyone with the copied link can see and control these simulators until you stop sharing. Use a trusted Wi-Fi or Ethernet network.")
         }
-        .alert("Could not share on LAN", isPresented: Binding(
-            get: { web.lanError != nil },
-            set: { if !$0 { web.lanError = nil } }
+        .alert("Web sharing", isPresented: Binding(
+            get: { web.sharingError != nil },
+            set: { if !$0 { web.sharingError = nil } }
         )) {
-            Button("OK") { web.lanError = nil }
+            Button("OK") { web.sharingError = nil }
         } message: {
-            Text(web.lanError ?? "")
+            Text(web.sharingError ?? "")
+        }
+    }
+
+    private var publicMenu: some View {
+        Menu {
+            if let url = web.publicURL {
+                Text(url.host ?? "")
+                Button("Copy Public Link") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                }
+                Button("Stop Public Access") { web.stopPublic() }
+            } else if web.isStartingPublic {
+                Button("Cancel Public Access") { web.stopPublic() }
+            } else {
+                Button("Enable Public Access…") { showPublicConfirmation = true }
+            }
+        } label: {
+            Label(web.isStartingPublic ? "Connecting…" : web.publicURL == nil ? "Public Access" : "Public Access On",
+                  systemImage: "globe")
+        }
+        .confirmationDialog("Allow control over the internet?", isPresented: $showPublicConfirmation, titleVisibility: .visible) {
+            Button("Enable Public Access") { web.startPublic() }
+        } message: {
+            Text("Anyone with the public link can view and control these simulators through Cloudflare until you stop sharing.")
         }
     }
 

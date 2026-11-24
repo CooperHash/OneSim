@@ -14,11 +14,16 @@ bpy.ops.wm.usd_import(
 scene = bpy.context.scene
 scene.frame_start = 0
 scene.frame_end = 120
+for action in bpy.data.actions:
+    action.use_frame_range = True
+    action.frame_start = 0
+    action.frame_end = 120
 bpy.ops.export_scene.gltf(
     filepath=output,
     export_format="GLB",
     export_animations=True,
     export_frame_range=True,
+    export_nla_strips=False,
     export_cameras=False,
     export_lights=False,
     export_yup=True,

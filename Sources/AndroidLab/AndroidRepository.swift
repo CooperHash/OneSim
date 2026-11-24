@@ -102,11 +102,11 @@ enum AndroidRepository {
         return errno == EPERM
     }
 
-    static func listDevices(paths: ToolPaths) -> [AvdDevice] {
+    static func deviceInventory(paths: ToolPaths) -> (devices: [AvdDevice], endpoints: [String: EmulatorEndpoint]) {
         let configurations = avdConfigurations(paths: paths)
-        guard !configurations.isEmpty else { return [] }
+        guard !configurations.isEmpty else { return ([], [:]) }
         let endpoints = runningEndpoints()
-        let adbSerials = (try? Shell.runSync(paths.adb, ["devices"], environment: paths.environment, timeout: 5))?.stdout ?? ""
+        let adbSerials = endpoints.isEmpty ? [] : Set(adbDevices(paths: paths))
 
         var devices: [AvdDevice] = []
         for (name, dir, config) in configurations {
@@ -139,17 +139,15 @@ enum AndroidRepository {
                 device.serial = endpoint.serial
                 device.grpcPort = endpoint.grpcPort
                 device.grpcToken = endpoint.token
-                device.state = .running
-                if !adbSerials.contains("\(endpoint.serial)\tdevice") {
-                    device.state = .booting
-                }
+                device.state = adbSerials.contains(endpoint.serial) ? .running : .booting
             }
             devices.append(device)
         }
-        return devices.sorted {
+        devices.sort {
             if $0.state.isLive != $1.state.isLive { return $0.state.isLive }
             return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
+        return (devices, endpoints)
     }
 
     private static func avdConfigurations(paths: ToolPaths) -> [(String, URL, [String: String])] {

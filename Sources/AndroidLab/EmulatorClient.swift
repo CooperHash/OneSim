@@ -22,7 +22,6 @@ final class EmulatorClient: @unchecked Sendable {
     private let lock = NSLock()
     private var channel: Channel?
     private var stream: Channel?
-    private var multiplexer: HTTP2StreamMultiplexer?
     private var port: Int?
     private var token: String = ""
     private var displayRotation = 0
@@ -120,11 +119,12 @@ final class EmulatorClient: @unchecked Sendable {
             channel.close(promise: nil)
             throw CancellationError()
         }
-        self.channel = channel
-        self.stream = stream
-        self.multiplexer = multiplexer
-        self.port = port
-        self.token = token
+        lock.withLock {
+            self.channel = channel
+            self.stream = stream
+            self.port = port
+            self.token = token
+        }
 
         timeoutTask?.cancel()
         timeoutTask = Task { [weak self] in
@@ -176,45 +176,49 @@ final class EmulatorClient: @unchecked Sendable {
         }
     }
 
+    func sendKeyboardEvent(_ payload: [UInt8]) async throws {
+        try await sendUnary(method: "sendKey", payload: payload)
+    }
+
+    func setClipboard(_ text: String) async throws {
+        try await sendUnary(method: "setClipboard", payload: Proto.clipData(text))
+    }
+
     private func sendUnary(method: String, payload: [UInt8]) async throws {
-        guard let multiplexer, let channel, let port else {
+        let endpoint = lock.withLock { (channel, port, token) }
+        guard let channel = endpoint.0, let port = endpoint.1 else {
             throw AndroidLabError.message("The emulator control channel is not connected.")
         }
-        let promise = channel.eventLoop.makePromise(of: Channel.self)
-        let token = self.token
-        multiplexer.createStreamChannel(promise: promise) { streamChannel, streamID in
-            var head = HTTPRequestHead(
-                version: .http2,
-                method: .POST,
-                uri: "/android.emulation.control.EmulatorController/\(method)"
-            )
-            head.headers.add(name: "host", value: "127.0.0.1:\(port)")
-            head.headers.add(name: "content-type", value: "application/grpc")
-            head.headers.add(name: "te", value: "trailers")
-            if !token.isEmpty {
-                head.headers.add(name: "authorization", value: "Bearer \(token)")
+        let response = channel.eventLoop.makePromise(of: Void.self)
+        let stream: Channel = try await channel.pipeline.handler(type: HTTP2StreamMultiplexer.self).flatMap { mux -> EventLoopFuture<Channel> in
+            let promise = channel.eventLoop.makePromise(of: Channel.self)
+            mux.createStreamChannel(promise: promise) { child in
+                var head = HTTPRequestHead(version: .http2, method: .POST,
+                    uri: "/android.emulation.control.EmulatorController/\(method)")
+                head.headers.add(name: "host", value: "127.0.0.1:\(port)")
+                head.headers.add(name: "content-type", value: "application/grpc")
+                head.headers.add(name: "te", value: "trailers")
+                if !endpoint.2.isEmpty { head.headers.add(name: "authorization", value: "Bearer " + endpoint.2) }
+                do {
+                    try child.pipeline.syncOperations.addHandlers([
+                        HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: .http), UnaryResponseHandler(response),
+                    ])
+                    var body = child.allocator.buffer(capacity: payload.count + 5)
+                    body.writeBytes(Proto.grpcFrame(payload))
+                    child.write(HTTPClientRequestPart.head(head), promise: nil)
+                    child.write(HTTPClientRequestPart.body(.byteBuffer(body)), promise: nil)
+                    child.writeAndFlush(HTTPClientRequestPart.end(nil), promise: nil)
+                    return child.eventLoop.makeSucceededVoidFuture()
+                } catch { return child.eventLoop.makeFailedFuture(error) }
             }
-            streamChannel.pipeline.addHandlers([
-                HTTP2ToHTTP1ClientCodec(streamID: streamID, httpProtocol: .http),
-                UnaryDiscardHandler(),
-            ]).whenComplete { result in
-                switch result {
-                case .failure(let error):
-                    DebugLog.write("unary pipeline failed: \(error.localizedDescription)")
-                case .success:
-                    streamChannel.write(HTTPClientRequestPart.head(head))
-                    var body = streamChannel.allocator.buffer(capacity: payload.count + 8)
-                    body.writeBytes([UInt8](Proto.grpcFrame(payload)))
-                    streamChannel.write(HTTPClientRequestPart.body(.byteBuffer(body)))
-                    streamChannel.write(HTTPClientRequestPart.end(nil))
-                    streamChannel.flush()
-                }
-            }
-            return streamChannel.eventLoop.makeSucceededVoidFuture()
-        }
-        let stream = try await promise.futureResult.get()
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        stream.close(promise: nil)
+            return promise.futureResult
+        }.flatMapErrorThrowing { error in
+            response.fail(error)
+            throw error
+        }.get()
+        let timeout = stream.eventLoop.scheduleTask(in: .seconds(5)) { stream.close(promise: nil) }
+        defer { timeout.cancel() }
+        try await response.futureResult.get()
     }
 
     func stop() {
@@ -230,7 +234,6 @@ final class EmulatorClient: @unchecked Sendable {
         let channel = self.channel
         self.stream = nil
         self.channel = nil
-        self.multiplexer = nil
         self.port = nil
         self.token = ""
         lock.unlock()
@@ -339,14 +342,30 @@ final class EmulatorClient: @unchecked Sendable {
     }
 }
 
-private final class UnaryDiscardHandler: ChannelInboundHandler, @unchecked Sendable {
+private final class UnaryResponseHandler: ChannelInboundHandler {
     typealias InboundIn = HTTPClientResponsePart
+    private let response: EventLoopPromise<Void>
+    private var status: String?
+
+    init(_ response: EventLoopPromise<Void>) { self.response = response }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        // Unary control responses are intentionally ignored.
+        switch unwrapInboundIn(data) {
+        case .head(let head): status = head.headers.first(name: "grpc-status")
+        case .end(let trailers):
+            if (trailers?.first(name: "grpc-status") ?? status) == "0" { response.succeed(()) }
+            else { response.fail(AndroidLabError.message("The emulator rejected the control request.")) }
+        case .body: break
+        }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        response.fail(ChannelError.eof)
+        context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        response.fail(error)
         context.close(promise: nil)
     }
 }

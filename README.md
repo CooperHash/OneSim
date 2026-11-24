@@ -52,13 +52,41 @@ Use **SimLab → Android SDK…** to select a different SDK. SimLab can create A
 4. Use the **Info** or **Session Log** toolbar buttons to show the inspector, and click the same button again or its close button to hide it. Search filters devices by name, Android version, and hardware profile without changing the current selection.
 5. **Device → Start / Stop Selected** is `⌘↩`. **Device → Cold Boot** is `⇧⌘↩`.
 
-### Default workspace and Web MultiSim
+#Click a text field inside a simulator in the Mac app to type with the Mac keyboard. The most recently clicked screen receives typing, Return, Tab, Delete, arrows, Shift-selection, ⌘A and ⌘V. macOS handles input-method candidates. Committed Chinese, emoji and pasted text can use the target simulator's clipboard. iOS can ask the receiving app for paste permission.
+
+## Default workspace and Web MultiSim
+
+**Run FN** (the play button left of the web/LAN controls) starts Foresight News
+with Metro on every device in the current MultiSim workspace. It uses
+`~/Documents/app/fn/apps/mobile`, starts Expo on LAN port 8081 or reuses Metro
+only when it belongs to that project, and keeps Fast Refresh enabled. Android
+uses the installed `pro.foresightnews.app.local` development app with adb port
+reverse; iPhones use the installed `pro.foresightnews.app` development app.
+If macOS uses a local HTTP proxy, Run FN creates a loopback-only relay and
+forwards it into Android on port 8888. The relay sends Metro requests directly
+to local port 8081 and passes other HTTP/CONNECT traffic to the Mac's existing
+proxy. HTTPS remains an encrypted tunnel. It preserves any remote Android
+proxy configuration.
+Missing development apps are reported per device; the button never builds or
+installs them. Metro output is saved to `~/Library/Caches/com.simlab.app/fn-metro.log`.
+Quitting SimLab stops a Metro process it started, while leaving a reused server alone.
+
+Verified with the installed Android `.local` app, iPhone 16 Pro and iPhone Duo:
+all three connected to the same Metro process and loaded FN. Repeated runs reuse
+Metro; quitting SimLab stops its owned process. Launcher, proxy routing and
+MultiSim workspace tests: 8 passed.
 
 Setup creates and selects a workspace with Android, iPhone 16 Pro, and iPhone Duo when there is no workspace. It first reuses a compatible Android AVD, with preference for a regular phone. If it needs to create an AVD, it uses the installed API 36 Google APIs image first, then another installed ARM64 image such as Google Play. It offers to download the Google APIs image when no usable ARM64 image is available. On its first boot, the managed Android AVD trims optional packages and saves a Quick Boot checkpoint locally. Subsequent Balanced boots load the checkpoint without overwriting it. Switch the target AVD to **Standard** to keep later guest changes across boots. The snapshot is generated on each host for its local emulator and image versions.
 
 **Start Web Service** opens [http://127.0.0.1:8080](http://127.0.0.1:8080) once Android is ready. Compatible iPhones start in sequence in the background, and the page explains when an iPhone is unavailable. Click, tap, drag or scroll on a live display. Each device also has navigation and rotation buttons. Duo has a fold button, three presets, and an adjustable hinge slider. Use the text field to send printable ASCII to the focused input on the device.
 
 To connect from another device on the same network, choose **Share on LAN** in the SimLab header, select the Mac’s local IP address and enable access. Open **Copy LAN Link** on the other device. The link contains a session key that grants access to both the display and controls. LAN sharing uses HTTP on port 8080, so use it on a trusted network. **Stop Sharing** disconnects LAN clients. **Stop** closes both listeners and leaves the simulators available in the app.
+
+For an internet session, enable LAN sharing first, then choose **Public Access → Enable Public Access** and **Copy Public Link**. The link opens in a browser, grants control of the simulators, and includes a fresh key for that session. The Mac must stay awake with SimLab running. **Stop Public Access** closes public viewers while LAN viewers stay connected. **Stop Sharing** also closes public access.
+
+The public link uses a temporary Cloudflare Quick Tunnel with HTTPS and WebSockets. The tunnel connects to a separate, key-protected loopback listener on the Mac. The helper needs outbound TCP port 7844. Builds made with Homebrew’s `cloudflared` installed include the helper. For other builds, install it with `brew install cloudflared` before enabling public access.
+
+Switching away from the browser tab pauses its stream. Returning to it resumes the connection. A network interruption triggers up to five reconnect attempts, and **Reconnect** retries immediately.
 
 The stream adapts to activity. The service samples at up to 60 times per second while you interact or the hinge moves, and at 15 per second while idle. It sends changed frames and replays the last JPEG to new viewers. In a secure context with WebCodecs, the browser can use hardware-encoded H.264. Plain LAN HTTP uses JPEG drawn directly to Canvas. **LAN Power Saving** pauses local previews and resource polling while sharing. Those previews also pause automatically when the workspace is hidden or minimized.
 

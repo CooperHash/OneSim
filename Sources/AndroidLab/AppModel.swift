@@ -12,7 +12,7 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(selection, forKey: "SimLab.selection") }
     }
     @Published var toast: String?
-    @Published var isRefreshing = false
+    private var isRefreshing = false
     @Published var isCreating = false
     @Published var isInstalling = false
     @Published var creationError: String?
@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isCheckingDependencies = false
     @Published private(set) var isSettingUp = false
     let web = WebMultiSimController()
+    let foresight = ForesightDevLauncher()
     let xcode = XcodeManager()
 
     private var monitorTask: Task<Void, Never>?
@@ -332,8 +333,8 @@ final class AppModel: ObservableObject {
         monitorTask?.cancel()
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let self else { return }
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self else { return }
                 await self.refresh()
             }
         }
@@ -348,12 +349,12 @@ final class AppModel: ObservableObject {
         let paths = settings
         let snapshot = await Task.detached(priority: .utility) {
             (AndroidRepository.listImages(paths: paths),
-             AndroidRepository.runningEndpoints(),
-             Set(AndroidRepository.adbDevices(paths: paths)),
-             AndroidRepository.listDevices(paths: paths))
+             AndroidRepository.deviceInventory(paths: paths))
         }.value
-        let (newImages, endpoints, adbSerials, devicesSnapshot) = snapshot
-        var updated = devicesSnapshot
+        guard paths == settings else { return }
+        let (newImages, inventory) = snapshot
+        let endpoints = inventory.endpoints
+        var updated = inventory.devices
         let validIDs = Set(updated.map(\.id))
 
         let staleIDs = runtimes.keys.filter { !validIDs.contains($0) }
@@ -374,7 +375,7 @@ final class AppModel: ObservableObject {
             }
 
             if let endpoint = endpoints[id] {
-                runtime.attach(endpoint: endpoint, booted: adbSerials.contains(endpoint.serial), paths: settings)
+                runtime.attach(endpoint: endpoint, booted: updated[index].state == .running, paths: settings)
                 updated[index].state = runtime.state
                 updated[index].serial = endpoint.serial
                 updated[index].grpcPort = endpoint.grpcPort
@@ -390,21 +391,21 @@ final class AppModel: ObservableObject {
             }
         }
 
-        images = newImages
-        devices = updated
+        if images != newImages { images = newImages }
+        if devices != updated { devices = updated }
 
         let oldSelection = selection
         let selectedID = oldSelection?.hasPrefix("multisim:") == true
             ? String(oldSelection!.dropFirst("multisim:".count)) : oldSelection
         if selectedID == nil || !updated.contains(where: { $0.id == selectedID }) {
-            selection = updated.first(where: { $0.state.isLive })?.id ?? updated.first?.id
+            let next = updated.first(where: { $0.state.isLive })?.id ?? updated.first?.id
+            if selection != next { selection = next }
         }
-        let existingIDs = Set(updated.map(\.id))
         let retainedWorkspaces = multiSimWorkspaces.compactMap { workspace -> MultiSimWorkspace? in
-            guard existingIDs.contains(workspace.androidID) else { return nil }
+            guard validIDs.contains(workspace.androidID) else { return nil }
             var copy = workspace
             copy.members.removeAll { member in
-                if case .android(let id) = member { return !existingIDs.contains(id) }
+                if case .android(let id) = member { return !validIDs.contains(id) }
                 return false
             }
             return copy
@@ -417,7 +418,7 @@ final class AppModel: ObservableObject {
         for device in updated where endpoints[device.id] != nil {
             runtimes[device.id]?.refreshBootState(paths: settings, isFoldable: device.isFoldable)
         }
-        for runtime in iosRuntimes.values { await runtime.refreshBootState() }
+        await IOSSimulatorRuntime.refreshBootStates(Array(iosRuntimes.values))
     }
 
     // MARK: - Devices
@@ -475,6 +476,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        foresight.stop()
         web.stop()
         for runtime in runtimes.values {
             runtime.closeStreamForShutdown()
@@ -571,13 +573,12 @@ final class AppModel: ObservableObject {
     }
 
     func typeText(deviceID: String, text: String) {
-        guard let serial = runtimes[deviceID]?.serial else { return }
-        Task {
-            do {
-                try await AndroidRepository.text(serial: serial, text: text, paths: settings)
-            } catch {
-                toast = error.localizedDescription
-            }
+        sendKeyboard(.text(text), to: deviceID)
+    }
+
+    func sendKeyboard(_ input: SimulatorKeyboardInput, to deviceID: String) {
+        runtimes[deviceID]?.sendKeyboard(input, paths: settings) { [weak self] error in
+            self?.toast = error.localizedDescription
         }
     }
 

@@ -7,6 +7,7 @@ struct DeviceManagerView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showDelete = false
     @State private var showInspector = false
+    @State private var windowVisible = true
     @State private var inspectorTab: InspectorTab = .info
 
     private enum InspectorTab: String, CaseIterable {
@@ -21,6 +22,8 @@ struct DeviceManagerView: View {
 
     var body: some View {
         workspace
+            .environment(\.simulatorPreviewPaused, !windowVisible)
+            .background(WindowPreviewVisibility(visible: $windowVisible))
             .navigationTitle(device.displayName)
             .navigationSubtitle("\(androidVersion) Emulator")
             .toolbar {

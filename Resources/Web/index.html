@@ -9,10 +9,13 @@
 <body data-access="__ACCESS__" data-duo-model="__DUO_MODEL__">
   <header>
     <h1>Web MultiSim</h1>
-    <span id="status" role="status">Connecting…</span>
+    <div>
+      <span id="status" role="status">Connecting…</span>
+      <button type="button" id="reconnect" hidden>Reconnect</button>
+    </div>
   </header>
   <form id="access" hidden>
-    <input id="code" type="password" aria-label="LAN access key" placeholder="LAN access key" autocomplete="off" required>
+    <input id="code" type="password" aria-label="Access key" placeholder="Access key" autocomplete="off" required>
     <button>Connect</button>
   </form>
   <nav id="devices" aria-label="Simulators"></nav>

@@ -60,7 +60,16 @@ final class DuoPointerView: NSView {
             touching = targetScreen?.sendTouch(.down, normalized: visual, edge: dragEdge) == true
         }
         if !touching { DebugLog.write("Duo touch unavailable: screenAttached=\(targetScreen != nil)") }
-        window?.makeFirstResponder(self)
+        runtime?.focusMacKeyboard(in: self, at: event.locationInWindow)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if window?.firstResponder === self,
+           let keyboard = runtime?.focusMacKeyboard(in: self, at: convert(CGPoint(x: bounds.midX, y: bounds.midY), to: nil)) {
+            keyboard.keyDown(with: event)
+        } else {
+            super.keyDown(with: event)
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -142,14 +151,6 @@ final class DuoPointerView: NSView {
     }
 
     private func mirror(_ p: CGPoint) -> CGPoint { CGPoint(x: 1 - p.x, y: 1 - p.y) }
-
-    override func keyDown(with event: NSEvent) {
-        if let characters = event.characters, !event.modifierFlags.contains(.command) {
-            activeScreen?.typeText(characters)
-        } else {
-            super.keyDown(with: event)
-        }
-    }
 
     /// The digitizer uses the unrotated IOSurface's pixel coordinates. Keep
     /// gestures aligned with the displayed image for every device orientation.

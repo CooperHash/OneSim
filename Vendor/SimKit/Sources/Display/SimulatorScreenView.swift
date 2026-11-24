@@ -276,8 +276,11 @@ public final class SimulatorScreenView: MTKView {
   /// if the user releases Option mid-gesture (matches Simulator.app).
   private var isTwoFingerDrag = false
 
+  public var onKeyboardFocus: ((NSPoint) -> NSResponder?)?
+
   public override func mouseDown(with event: NSEvent) {
     guard let normalised = normalizedPoint(for: event) else { return }
+    _ = onKeyboardFocus?(event.locationInWindow)
     isTwoFingerDrag = event.modifierFlags.contains(.option)
     if isTwoFingerDrag {
       let p2 = mirror(normalised)
@@ -351,6 +354,16 @@ public final class SimulatorScreenView: MTKView {
   }
 
   public override func keyDown(with event: NSEvent) {
+    if let onKeyboardFocus {
+      // AppKit can restore focus to the Metal view when the screen is reattached.
+      if window?.firstResponder === self,
+         let responder = onKeyboardFocus(convert(CGPoint(x: bounds.midX, y: bounds.midY), to: nil)), responder !== self {
+        responder.keyDown(with: event)
+      } else {
+        super.keyDown(with: event)
+      }
+      return
+    }
     if let characters = event.characters, !event.modifierFlags.contains(.command) {
       for character in characters {
         if let pair = KeyboardKey.decompose(character: character) {

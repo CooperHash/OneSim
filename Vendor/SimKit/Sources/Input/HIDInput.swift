@@ -396,7 +396,7 @@ final class HIDInput: @unchecked Sendable {
       let mods = modifiers.sorted { $0.rawValue < $1.rawValue }
       for modifier in mods { _ = SimKitHIDKey(modern, UInt64(modifier.hidUsage.usage), true) }
       let down = SimKitHIDKey(modern, UInt64(key.hidUsage.usage), true)
-      usleep(holdMicroseconds(for: duration))
+      usleep(holdMicroseconds(for: duration, minimum: 1_000))
       let up = SimKitHIDKey(modern, UInt64(key.hidUsage.usage), false)
       for modifier in mods.reversed() { _ = SimKitHIDKey(modern, UInt64(modifier.hidUsage.usage), false) }
       return down && up
@@ -405,7 +405,7 @@ final class HIDInput: @unchecked Sendable {
       hidLogger.debug("[hid] key — IndigoHIDMessageForHIDArbitrary unresolved")
       return false
     }
-    let holdUs = holdMicroseconds(for: duration)
+    let holdUs = holdMicroseconds(for: duration, minimum: 1_000)
     let target = touchDigitizer
     // Sort modifiers so the down/up order is deterministic; iOS
     // doesn't care, but tests + logs become reproducible.
@@ -435,10 +435,10 @@ final class HIDInput: @unchecked Sendable {
   /// without crossing into "long press" territory. A non-zero duration
   /// (in seconds) overrides; we clamp the floor so a 0.001 s request
   /// doesn't underrun the simulator's HID dispatch.
-  private func holdMicroseconds(for duration: Double) -> UInt32 {
+  private func holdMicroseconds(for duration: Double, minimum: Double = 20_000) -> UInt32 {
     guard duration > 0 else { return 100_000 }
     let us = duration * 1_000_000
-    return UInt32(min(max(us, 20_000), Double(UInt32.max)))
+    return UInt32(min(max(us, minimum), Double(UInt32.max)))
   }
 
   func scroll(deltaX: Double, deltaY: Double) -> Bool {

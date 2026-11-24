@@ -7,6 +7,7 @@ struct DeviceWorkspaceView: View {
     var showsWindowToolbar = true
     var pairedPhoneScreenHeight: CGFloat? = nil
     @EnvironmentObject private var model: AppModel
+    @Environment(\.simulatorPreviewPaused) private var previewPaused
 
     @State private var zoom: CGFloat = 1
     @State private var showType = false
@@ -19,6 +20,10 @@ struct DeviceWorkspaceView: View {
     }
 
     @ObservedObject var runtime: DeviceRuntime
+
+    private var monitoredDeviceID: String? {
+        showsWindowToolbar && !previewPaused && runtime.state == .running ? deviceID : nil
+    }
 
     var body: some View {
         Group {
@@ -72,13 +77,11 @@ struct DeviceWorkspaceView: View {
         } message: {
             Text(runtime.foldError ?? "")
         }
-        .task(id: runtime.state) {
-            guard showsWindowToolbar else { return }
+        .task(id: monitoredDeviceID) {
+            guard let id = monitoredDeviceID else { return }
             while !Task.isCancelled {
-                let targets: [SimulatorResourceTarget] = runtime.state == .running
-                    ? [.android(key: "android:\(deviceID)", avdName: deviceID)] : []
-                await resources.refresh(targets)
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await resources.refresh([.android(key: "android:\(id)", avdName: id)])
+                try? await Task.sleep(for: .seconds(5))
             }
         }
     }
@@ -140,7 +143,7 @@ struct DeviceWorkspaceView: View {
                 .frame(width: 280)
                 .onSubmit { sendText(device) }
             HStack {
-                Text("ASCII only. Use the on-screen keyboard for other languages.")
+                Text("You can also click the simulator and type with your Mac keyboard.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("Send") { sendText(device) }.disabled(text.isEmpty)
@@ -183,6 +186,7 @@ private struct LiveDeviceCanvas: View {
                                     onSwipe: { model.swipe(deviceID: device.id, x1: $0, y1: $1, x2: $2, y2: $3, duration: $4) },
                                     onLongPress: { model.swipe(deviceID: device.id, x1: $0, y1: $1, x2: $0, y2: $1, duration: 720) },
                                     onTouch: { model.touch(deviceID: device.id, x: $0, y: $1, phase: $2) },
+                                    onKeyboard: { model.sendKeyboard($0, to: device.id) },
                                     zoom: zoom,
                                     pairedPhoneScreenHeight: pairedPhoneScreenHeight,
                                     frameStore: frames

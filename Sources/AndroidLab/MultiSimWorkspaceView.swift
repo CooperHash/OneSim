@@ -66,6 +66,7 @@ struct MultiSimWorkspaceView: View {
                 }
                 .help("Add a simulator to this workspace")
 
+                ForesightDevToolbar(launcher: model.foresight, workspace: workspace)
                 WebMultiSimToolbar(web: model.web, workspace: workspace)
             }
         }
@@ -188,6 +189,9 @@ private struct IOSSimulatorColumn: View {
     static let pointsPerNativePixel: CGFloat = 678.0 / 2622.0
 
     private var duoDisplay: DuoActiveDisplay {
+        if runtime.is3DPoseActive {
+            return runtime.duoHingeAngle <= 45 ? .outer : .inner
+        }
         if let iosImageSize {
             return iosImageSize.width * iosImageSize.height >= 4_000_000 ? .inner : .outer
         }
@@ -585,7 +589,13 @@ private struct IOSSimulatorColumn: View {
             },
             onSurfaceFrame: { runtime.flipRenderer?.receive(surface: $0) },
             onError: { screenError = $0.localizedDescription },
-            onAttached: { runtime.screenView = $0 }
+            onAttached: { [runtime] screen in
+                runtime.screenView = screen
+                screen.onKeyboardFocus = { [weak runtime, weak screen] point in
+                    guard let screen else { return nil }
+                    return runtime?.focusMacKeyboard(in: screen, at: point)
+                }
+            }
         )
         if kind == .iphoneDuo || screenQuarterTurns != 0 {
             screen

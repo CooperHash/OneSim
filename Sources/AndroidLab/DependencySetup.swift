@@ -88,11 +88,11 @@ struct DependencySetup {
         try fm.createDirectory(at: staging, withIntermediateDirectories: false)
         defer { try? fm.removeItem(at: staging) }
 
-        let file = try await fetch(package, staging: staging) { bytes in
+        let parts = try await fetch(package, staging: staging) { bytes in
             progress(bytes, "Downloading \(package.name)")
         }
         progress(package.bytes, "Verifying \(package.name)")
-        try verify(file, package: package)
+        let file = try verifiedArchive(parts: parts, staging: staging, package: package)
         try Task.checkCancellation()
         progress(package.bytes, "Extracting \(package.name)")
         let expanded = staging.appendingPathComponent("archive", isDirectory: true)
@@ -126,7 +126,7 @@ struct DependencySetup {
     }
 
     private static func fetch(_ package: Package, staging: URL,
-                              progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+                              progress: @escaping @Sendable (Int64) -> Void) async throws -> [URL] {
         let fm = FileManager.default
         let archive = staging.appendingPathComponent("package.zip")
         if package.bytes < 512_000_000 {
@@ -137,7 +137,7 @@ struct DependencySetup {
                 throw SetupError("Google could not provide \(package.name).")
             }
             try fm.moveItem(at: file, to: archive)
-            return archive
+            return [archive]
         }
 
         let partCount = 4
@@ -170,21 +170,7 @@ struct DependencySetup {
             }
             try await group.waitForAll()
         }
-        try Data().write(to: archive)
-        let output = try FileHandle(forWritingTo: archive)
-        defer { try? output.close() }
-        for index in 0..<partCount {
-            let part = staging.appendingPathComponent("part-\(index)")
-            let input = try FileHandle(forReadingFrom: part)
-            do {
-                defer { try? input.close() }
-                while let data = try input.read(upToCount: 1_048_576), !data.isEmpty {
-                    try output.write(contentsOf: data)
-                }
-            }
-            try fm.removeItem(at: part)
-        }
-        return archive
+        return (0..<partCount).map { staging.appendingPathComponent("part-\($0)") }
     }
 
     private final class ByteCounter: @unchecked Sendable {
@@ -203,19 +189,36 @@ struct DependencySetup {
         }
     }
 
-    static func verify(_ url: URL, package: Package) throws {
-        let file = try FileHandle(forReadingFrom: url)
-        defer { try? file.close() }
+    /// Hash in download order while assembling the image. Single-file downloads are verified in place.
+    static func verifiedArchive(parts: [URL], staging: URL, package: Package) throws -> URL {
+        guard let first = parts.first else { throw SetupError("Missing archive for \(package.name).") }
+        let archive = parts.count == 1 ? first : staging.appendingPathComponent("package.zip")
+        var output: FileHandle?
+        if parts.count > 1 {
+            try Data().write(to: archive, options: .withoutOverwriting)
+            output = try FileHandle(forWritingTo: archive)
+        }
+        defer { try? output?.close() }
         var hash = Insecure.SHA1()
         var count: Int64 = 0
-        while let bytes = try file.read(upToCount: 1_048_576), !bytes.isEmpty {
-            count += Int64(bytes.count)
-            hash.update(data: bytes)
+        for part in parts {
+            let file = try FileHandle(forReadingFrom: part)
+            defer { try? file.close() }
+            while let bytes = try file.read(upToCount: 1_048_576), !bytes.isEmpty {
+                try Task.checkCancellation()
+                count += Int64(bytes.count)
+                hash.update(data: bytes)
+                try output?.write(contentsOf: bytes)
+            }
+            if output != nil { try FileManager.default.removeItem(at: part) }
         }
+        try output?.close()
+        output = nil
         let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
         guard count == package.bytes && digest == package.sha1 else {
             throw SetupError("Integrity check failed for \(package.name).")
         }
+        return archive
     }
 
     private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, Sendable {

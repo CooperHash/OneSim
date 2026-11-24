@@ -57,6 +57,7 @@ final class DeviceRuntime: ObservableObject {
 
     private var process: RunningEmulator?
     private var client: EmulatorClient?
+    private let keyboardQueue = SimulatorKeyboardQueue()
     private var inputClient: EmulatorInputClient?
     private var touchCoordinates: FrameCoordinates?
     private var activeTouch: (Int, Int)?
@@ -96,8 +97,9 @@ final class DeviceRuntime: ObservableObject {
     func attach(endpoint: EmulatorEndpoint, booted: Bool, paths: ToolPaths) {
         let portChanged = grpcPort != endpoint.grpcPort || serial != endpoint.serial
         if portChanged { invalidateFoldSession() }
-        slimMode = AndroidSlimClient.mode(avdName: avdName, paths: paths)
-        serial = endpoint.serial
+        let mode = AndroidSlimClient.mode(avdName: avdName, paths: paths)
+        if slimMode != mode { slimMode = mode }
+        if serial != endpoint.serial { serial = endpoint.serial }
         grpcPort = endpoint.grpcPort
         grpcToken = endpoint.token
         if state == .stopped || state == .error {
@@ -387,8 +389,8 @@ final class DeviceRuntime: ObservableObject {
                   self.state == .booting || self.state == .running, !Task.isCancelled else { return }
             if booted, self.state == .booting { self.state = .running }
             if let rotation, !self.isFoldTransitioning {
-                self.displayRotation = rotation
-                self.rotationQuarter = rotation
+                if self.displayRotation != rotation { self.displayRotation = rotation }
+                if self.rotationQuarter != rotation { self.rotationQuarter = rotation }
                 self.client?.setDisplayRotation(rotation, redrawLatest: true)
             }
             if let foldState, !self.isFoldTransitioning { self.applyFoldState(foldState) }
@@ -435,6 +437,41 @@ final class DeviceRuntime: ObservableObject {
     }
 
     // MARK: - Streaming
+
+    func sendKeyboard(_ input: SimulatorKeyboardInput, paths: ToolPaths, onError: @escaping (Error) -> Void) {
+        guard state == .running, let serial else { return }
+        let client = client
+        keyboardQueue.submit { [weak self] in
+            guard let self, self.serial == serial, self.state == .running else { return }
+            do {
+                let arguments: [String]
+                switch input {
+                case .text(let text):
+                    guard !text.isEmpty else { return }
+                    if text.utf8.count <= 80 && text.utf8.allSatisfy({ (32...126).contains($0) }) {
+                        if let client { try await client.sendKeyboardEvent(Proto.keyboardText(text)) }
+                        else { try await AndroidRepository.text(serial: serial, text: text, paths: paths) }
+                        return
+                    }
+                    guard let client else { throw AndroidLabError.message("Reconnect the emulator display to send this text.") }
+                    try await client.setClipboard(text)
+                    guard self.client === client, self.serial == serial else { return }
+                    arguments = ["keyevent", "279"]
+                case .key(let key, let shift):
+                    if let client, !shift {
+                        try await client.sendKeyboardEvent(Proto.keyboardKey(key.rawValue))
+                        return
+                    }
+                    arguments = shift ? ["keycombination", "59", String(key.androidCode)] : ["keyevent", String(key.androidCode)]
+                case .selectAll:
+                    arguments = ["keycombination", "113", "29"]
+                }
+                let result = try await Shell.run(paths.adb, ["-s", serial, "shell", "input"] + arguments,
+                                                 environment: paths.environment, timeout: 5)
+                guard result.ok else { throw AndroidLabError.message("Android could not deliver the keyboard input.") }
+            } catch { onError(error) }
+        }
+    }
 
     private func startStreaming() {
         guard let port = grpcPort else { return }
@@ -527,6 +564,7 @@ final class DeviceRuntime: ObservableObject {
     }
 
     private func stopClient() {
+        keyboardQueue.reset()
         streamStartupTask?.cancel()
         streamStartupTask = nil
         releaseActiveTouch()

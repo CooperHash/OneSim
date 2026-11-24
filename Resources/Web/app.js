@@ -1,13 +1,18 @@
 const statusText = document.getElementById('status');
+const reconnect = document.getElementById('reconnect');
 const access = document.getElementById('access');
 const code = document.getElementById('code');
-const needsKey = document.body.dataset.access === 'lan';
+const needsKey = document.body.dataset.access !== 'local';
 const workspace = document.getElementById('workspace');
 const deviceNav = document.getElementById('devices');
 const template = document.getElementById('device');
 let key = new URLSearchParams(location.hash.slice(1)).get('key') || sessionStorage.getItem('simlabKey') || '';
 if (location.hash) history.replaceState(null, '', location.pathname);
 let socket;
+let reconnectTimer;
+let retries = 0;
+let initialized = false;
+let verifiedKey;
 let preferVideo = false;
 const names = ['Android', 'iPhone 16 Pro', 'iPhone Duo'];
 const common = [['home', 'Home'], ['apps', 'Apps'], ['rotate', 'Rotate']];
@@ -25,7 +30,7 @@ function button(label, action) {
 
 function send(panel, action, data = {}) {
   if (socket?.readyState !== WebSocket.OPEN ||
-      ((action === 'move' || data.interactive) && socket.bufferedAmount > 2048)) return;
+      ((action === 'move' || data.interactive) && socket.bufferedAmount > 8192)) return;
   socket.send(JSON.stringify({ panel, action, ...data }));
 }
 
@@ -72,7 +77,7 @@ function makePanel(name, index) {
       statusText.textContent = 'Use the simulator keyboard for non-ASCII text.';
     }
   };
-  const panel = { index, stage, shell, screen, chrome, context, detail, state: {}, token: 0 };
+  const panel = { index, stage, shell, screen, chrome, context, detail, state: {}, token: 0, resetInput: [] };
   if (index === 2) {
     const hingeControl = document.createElement('details');
     const summary = document.createElement('summary');
@@ -140,6 +145,12 @@ function installInput(element, panel, point) {
     if (!position || !panel.displayRevision || panel.displayRevision !== panel.state.revision) return;
     return { ...position, revision: panel.displayRevision, digitizer: element !== panel.screen };
   }
+  panel.resetInput.push(() => {
+    if (drag && element.hasPointerCapture(drag.id)) element.releasePointerCapture(drag.id);
+    clearTimeout(wheel?.timer);
+    drag = wheel = null;
+    lastMove = 0;
+  });
   element.addEventListener('pointerdown', event => {
     if (event.button !== 0 || drag || wheel) return;
     const position = data(event);
@@ -149,7 +160,7 @@ function installInput(element, panel, point) {
     transmit('down', position);
   });
   element.addEventListener('pointermove', event => {
-    if (drag?.id !== event.pointerId || performance.now() - lastMove < 16) return;
+    if (drag?.id !== event.pointerId || performance.now() - lastMove < 10) return;
     const position = data(event);
     if (!position || position.revision !== drag.position.revision) return;
     lastMove = performance.now();
@@ -229,7 +240,16 @@ function updateState(panel, next) {
       if (!panel.slider.matches(':active')) panel.slider.value = next.angle;
       panel.output.textContent = next.angle + '°';
       if (previous.angle !== next.angle || previous.orientation !== next.orientation ||
-          previous.activeDisplay !== next.activeDisplay) panel.model?.setPose(next);
+          previous.activeDisplay !== next.activeDisplay) {
+        if (panel.model && !panel.model.active && next.angle < 179.5 && panel.displayRevision) {
+          const turns = panel.state.rotation || 0;
+          const sideways = turns % 2 === 1;
+          panel.model.setFrame(panel.screen, panel.state.activeDisplay,
+            sideways ? panel.screen.height : panel.screen.width,
+            sideways ? panel.screen.width : panel.screen.height, turns);
+        }
+        panel.model?.setPose(next);
+      }
     }
   }
   panel.detail.textContent = width && height
@@ -251,7 +271,10 @@ function paint(panel, image, revision) {
   context.rotate(turns * Math.PI / 2);
   context.drawImage(image, -w / 2, -h / 2, w, h);
   panel.displayRevision = revision;
-  panel.model?.setFrame(image, panel.state.activeDisplay, w, h);
+  const side = panel.state.activeDisplay || (w * h >= 400_000 ? 'inner' : 'outer');
+  if (panel.model && (panel.model.active || !panel.model.textures?.[side]?.hasFrame)) {
+    panel.model.setFrame(image, side, w, h);
+  }
 }
 
 async function decodeJPEG(panel) {
@@ -276,8 +299,15 @@ function decodeVideo(panel, frame, data) {
   const isKey = frame.getUint8(5) === 1;
   const sequence = frame.getUint32(6);
   if ((panel.state.revision || 0) !== revision) return;
-  if (!panel.decoder || panel.videoRevision !== revision ||
-      (!isKey && sequence !== panel.videoSequence + 1) || panel.decoder.decodeQueueSize > 3) {
+  if (panel.decoder && panel.videoRevision === revision &&
+      (!isKey && (sequence !== panel.videoSequence + 1 || panel.decoder.decodeQueueSize > 2))) {
+    if (!panel.awaitingKey) {
+      send(panel.index, 'refreshVideo');
+      panel.awaitingKey = true;
+    }
+    return;
+  }
+  if (!panel.decoder || panel.videoRevision !== revision) {
     if (panel.decoder?.state !== 'closed') panel.decoder?.close();
     panel.decoder = null;
     if (!isKey) {
@@ -294,7 +324,7 @@ function decodeVideo(panel, frame, data) {
           try { if (panel.decoder === decoder) paint(panel, image, revision); }
           finally { image.close(); }
         },
-        error() { retryWithoutVideo(); }
+        error() { if (panel.decoder === decoder) retryWithoutVideo(); }
       });
       decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
       panel.decoder = decoder;
@@ -316,12 +346,11 @@ function decodeVideo(panel, frame, data) {
 function retryWithoutVideo() {
   if (!preferVideo) return;
   preferVideo = false;
-  socket?.close();
-  resetDecoders();
+  disconnect();
   connect();
 }
 
-function resetDecoders() {
+function resetStream() {
   for (const panel of panels) {
     if (panel.decoder?.state !== 'closed') panel.decoder?.close();
     panel.decoder = null;
@@ -329,36 +358,69 @@ function resetDecoders() {
     panel.awaitingKey = false;
     panel.displayRevision = 0;
     panel.pending = null;
+    panel.resetInput.forEach(reset => reset());
   }
 }
 
+function disconnect() {
+  clearTimeout(reconnectTimer);
+  const previous = socket;
+  socket = null;
+  previous?.close();
+  resetStream();
+}
+
 function connect() {
-  if (needsKey && !/^[a-fA-F0-9]{32}$/.test(key)) {
-    access.hidden = false;
-    statusText.textContent = 'Enter the LAN key or open the link copied from SimLab.';
+  clearTimeout(reconnectTimer);
+  if (!initialized || document.hidden || socket) return;
+  reconnect.hidden = true;
+  if (!navigator.onLine) {
+    statusText.textContent = 'Offline. Waiting for the network…';
     return;
   }
-  access.hidden = true;
+  if (needsKey && !/^[a-fA-F0-9]{32}$/.test(key)) {
+    access.hidden = false;
+    statusText.textContent = 'Enter the access key or open the link copied from SimLab.';
+    return;
+  }
   statusText.textContent = 'Connecting…';
   const protocols = needsKey ? ['simlab', 'key.' + key] : ['simlab'];
   if (preferVideo) protocols.push('simlab.avc');
-  const ws = new WebSocket('ws://' + location.host + '/stream', protocols);
+  const endpoint = new URL('/stream', location.href);
+  endpoint.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(endpoint, protocols);
   socket = ws;
   ws.binaryType = 'arraybuffer';
   let opened = false;
   ws.onopen = () => {
+    if (socket !== ws) return;
     opened = true;
-    if (needsKey) sessionStorage.setItem('simlabKey', key);
+    access.hidden = true;
+    retries = 0;
+    if (needsKey) {
+      verifiedKey = key;
+      sessionStorage.setItem('simlabKey', key);
+    }
     statusText.textContent = 'Connected · control enabled';
   };
   ws.onclose = () => {
     if (socket !== ws) return;
-    resetDecoders();
-    if (needsKey) access.hidden = false;
-    statusText.textContent = opened ? 'Disconnected. Reload to reconnect.'
-      : 'Could not connect. Check the service and the current LAN key.';
+    socket = null;
+    resetStream();
+    if (document.hidden) return;
+    if (needsKey) access.hidden = opened;
+    if (navigator.onLine && (!needsKey || verifiedKey === key) && retries < 5) {
+      const delay = Math.min(8, 2 ** retries++);
+      statusText.textContent = `Disconnected. Reconnecting in ${delay}s…`;
+      reconnectTimer = setTimeout(connect, delay * 1000);
+    } else {
+      statusText.textContent = !navigator.onLine ? 'Offline. Waiting for the network…'
+        : needsKey ? 'Check the service and the current access key.' : 'Could not connect to SimLab.';
+    }
+    reconnect.hidden = false;
   };
   ws.onmessage = ({ data }) => {
+    if (socket !== ws) return;
     if (typeof data === 'string') {
       const state = JSON.parse(data);
       if (panels[state.panel]) updateState(panels[state.panel], state);
@@ -380,14 +442,37 @@ function connect() {
 
 access.addEventListener('submit', event => {
   event.preventDefault();
+  disconnect();
+  retries = 0;
   key = code.value.trim();
+  access.hidden = true;
   code.value = '';
   connect();
 });
+function resume() {
+  retries = 0;
+  connect();
+}
+reconnect.onclick = resume;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) disconnect();
+  else resume();
+});
+window.addEventListener('pagehide', disconnect);
+window.addEventListener('pageshow', resume);
+window.addEventListener('offline', () => {
+  disconnect();
+  statusText.textContent = 'Offline. Waiting for the network…';
+});
+window.addEventListener('online', resume);
+function start() {
+  initialized = true;
+  connect();
+}
 if (window.isSecureContext && typeof VideoDecoder !== 'undefined') {
   VideoDecoder.isConfigSupported({ codec: 'avc1.42e01f' }).then(result => {
     preferVideo = result.supported;
-  }).catch(() => {}).finally(connect);
+  }).catch(() => {}).finally(start);
 } else {
-  connect();
+  start();
 }

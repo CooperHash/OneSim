@@ -7,6 +7,7 @@ struct ScreenSurface: NSViewRepresentable {
     let onSwipe: (Int, Int, Int, Int, Int) -> Void
     let onLongPress: (Int, Int) -> Void
     var onTouch: ((Int, Int, TouchPhase) -> Bool)? = nil
+    var onKeyboard: ((SimulatorKeyboardInput) -> Void)?
     var frameStore: ScreenFrameStore? = nil
     @Environment(\.simulatorPreviewPaused) private var previewPaused
 
@@ -18,6 +19,7 @@ struct ScreenSurface: NSViewRepresentable {
         view.onSwipe = onSwipe
         view.onLongPress = onLongPress
         view.onTouch = onTouch
+        view.onKeyboard = onKeyboard
         return view
     }
 
@@ -28,6 +30,7 @@ struct ScreenSurface: NSViewRepresentable {
         view.onSwipe = onSwipe
         view.onLongPress = onLongPress
         view.onTouch = onTouch
+        view.onKeyboard = onKeyboard
     }
 }
 
@@ -49,6 +52,7 @@ final class ScreenNSView: NSView {
     var onSwipe: ((Int, Int, Int, Int, Int) -> Void)?
     var onLongPress: ((Int, Int) -> Void)?
     var onTouch: ((Int, Int, TouchPhase) -> Bool)?
+    var onKeyboard: ((SimulatorKeyboardInput) -> Void)?
     private var directGesture = false
     private var lastTouch: (Int, Int)?
     private var focusObservers: [NSObjectProtocol] = []
@@ -104,7 +108,14 @@ final class ScreenNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        if let onKeyboard {
+            MacSimulatorKeyboard.focus(in: self, at: event.locationInWindow, onBlur: { [weak self] in
+                self?.releaseTouch()
+                self?.startWindowPoint = nil
+            }, send: onKeyboard)
+        } else {
+            window?.makeFirstResponder(self)
+        }
         startWindowPoint = event.locationInWindow
         startTime = event.timestamp
         if let point = devicePoint(fromWindow: event.locationInWindow) {

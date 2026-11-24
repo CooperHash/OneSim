@@ -10,6 +10,38 @@ const outerHeight = 0.056149645;
 const rad = Math.PI / 180;
 const quarterTurn = Math.PI / 2;
 
+function resolveActiveDisplay(angle, current) {
+  if (angle <= 45) return 'outer';
+  if (angle >= 55) return 'inner';
+  return current || 'inner';
+}
+
+function createStudioEnvironment(renderer) {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envScene = new THREE.Scene();
+  envScene.background = new THREE.Color(0x282d38);
+  const addPanel = (color, intensity, w, h, d, x, y, z, rx = 0, ry = 0) => {
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity) })
+    );
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, ry, 0);
+    envScene.add(mesh);
+  };
+  // Soft top ceiling softbox + front-left key + right rim + warm ground bounce
+  addPanel(0xffffff, 2.6, 12, 0.2, 10, 0, 6, 2);
+  addPanel(0xf5f8ff, 2.2, 0.2, 8, 8, -6, 2, 4, 0, 0.4);
+  addPanel(0xdbe4ff, 1.8, 0.2, 8, 8, 6, 1, 3, 0, -0.4);
+  addPanel(0xffffff, 1.6, 10, 6, 0.2, 0, 2, 7);
+  addPanel(0x8c96ad, 1.1, 12, 0.2, 10, 0, -6, 0);
+  addPanel(0x9aa4ba, 1.3, 10, 6, 0.2, 0, 1, -7);
+  const target = pmrem.fromScene(envScene, 0.04);
+  pmrem.dispose();
+  return target.texture;
+}
+
 export class DuoModel {
   static async load(stage, panel) {
     const model = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).loadAsync('/assets/v68.glb');
@@ -20,8 +52,10 @@ export class DuoModel {
   constructor(stage, model, panel) {
     this.stage = stage;
     this.panel = panel;
-    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: 'low-power' });
+    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.12;
     this.canvas = this.renderer.domElement;
     this.canvas.className = 'fold-scene';
     this.canvas.hidden = true;
@@ -29,6 +63,8 @@ export class DuoModel {
     this.canvas.setAttribute('role', 'img');
     stage.append(this.canvas);
     this.scene = new THREE.Scene();
+    this.scene.environment = createStudioEnvironment(this.renderer);
+    this.scene.environmentIntensity = 1.25;
     this.camera = new THREE.PerspectiveCamera(24, 1, 0.001, 3);
     this.rig = new THREE.Group();
     this.offset = new THREE.Group();
@@ -37,8 +73,8 @@ export class DuoModel {
     this.rig.add(this.offset);
     this.offset.add(this.modelRoot);
     this.modelRoot.add(model.scene);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x7d87a6, 2.0));
-    for (const [x, y, z, intensity] of [[-2, 3, 3, 2], [2, 0, 1, 1.5], [0, -2, -3, 1]]) {
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8690a8, 1.65));
+    for (const [x, y, z, intensity] of [[2, 3, 4, 2.2], [-2.5, 2, 3, 1.4], [0, -2.5, -3.5, 1.1]]) {
       const light = new THREE.DirectionalLight(0xffffff, intensity);
       light.position.set(x, y, z);
       this.scene.add(light);
@@ -62,12 +98,15 @@ export class DuoModel {
       // WebGL allocates texture storage on its first upload. Keep its dimensions
       // stable when the actual panel wakes or switches stream encoders.
       canvas.width = canvas.height = 960;
+      const context = canvas.getContext('2d', { alpha: false });
+      context.fillStyle = '#0a0b0e';
+      context.fillRect(0, 0, canvas.width, canvas.height);
       const texture = new THREE.CanvasTexture(canvas);
       texture.flipY = false;
       texture.colorSpace = THREE.SRGBColorSpace;
       texture.generateMipmaps = false;
       texture.minFilter = THREE.LinearFilter;
-      this.textures[side] = { canvas, texture, context: canvas.getContext('2d', { alpha: false }) };
+      this.textures[side] = { canvas, texture, context, hasFrame: false };
       const live = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, toneMapped: false });
       model.scene.traverse(node => {
         if (node.material?.name !== name) return;
@@ -84,6 +123,9 @@ export class DuoModel {
       });
     }
     this.angle = 180;
+    this.target = 180;
+    this.orientation = 0;
+    this.display = 'inner';
     this.angularVelocity = 0;
     this.rotation = new THREE.Quaternion();
     this.rotationTarget = new THREE.Quaternion();
@@ -105,15 +147,21 @@ export class DuoModel {
     return mesh;
   }
 
-  setPose(state, snap = false) {
-    if (!Number.isFinite(state.angle)) return;
-    this.target = state.angle;
-    this.display = state.activeDisplay || (state.angle <= 45 ? 'outer' : 'inner');
-    const base = this.display === 'inner'
+  updateRotationTarget(display, orientation) {
+    const base = display === 'inner'
       ? new THREE.Quaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2)
       : new THREE.Quaternion(0.5, 0.5, -0.5, 0.5);
-    this.rotationTarget.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -(state.orientation || 0) * quarterTurn)
+    this.rotationTarget
+      .setFromAxisAngle(new THREE.Vector3(0, 0, 1), -(orientation || 0) * quarterTurn)
       .multiply(base);
+  }
+
+  setPose(state, snap = false) {
+    if (!Number.isFinite(state.angle)) return;
+    this.target = Math.max(0, Math.min(180, state.angle));
+    this.orientation = state.orientation || 0;
+    this.display = resolveActiveDisplay(this.target, this.display);
+    this.updateRotationTarget(this.display, this.orientation);
     if (snap || !this.initialized) {
       this.angle = this.target;
       this.angularVelocity = 0;
@@ -138,6 +186,7 @@ export class DuoModel {
     const sourceHeight = existingTurns % 2 ? width : height;
     ctx.drawImage(image, -sourceWidth / 2, -sourceHeight / 2, sourceWidth, sourceHeight);
     destination.texture.needsUpdate = true;
+    destination.hasFrame = true;
     if (this.active) this.requestDraw();
   }
 
@@ -158,6 +207,8 @@ export class DuoModel {
     const hingeMoving = Math.abs(delta) > 0.025 || Math.abs(speed) > 0.07;
     this.angle = hingeMoving ? this.target + delta : this.target;
     this.angularVelocity = hingeMoving ? speed : 0;
+    this.display = resolveActiveDisplay(this.angle, this.display);
+    this.updateRotationTarget(this.display, this.orientation);
     const angles = this.rotation.toArray();
     const sign = this.rotation.dot(this.rotationTarget) < 0 ? -1 : 1;
     const targets = this.rotationTarget.toArray().map(value => value * sign);
@@ -171,7 +222,7 @@ export class DuoModel {
     }
     this.rotation.fromArray(angles).normalize();
     this.quaternionVelocity.fromArray(velocity);
-    this.active = hingeMoving || (0.5 < this.angle && this.angle < 179.5);
+    this.active = hingeMoving || turning || this.angle < 179.5;
     this.stage.classList.toggle('folding', this.active);
     this.canvas.hidden = !this.active;
     if (this.active) this.draw();
@@ -195,7 +246,10 @@ export class DuoModel {
     const pixelsPerUnit = 180.86 * cssScale * 100;
     this.camera.position.z = 0.0026 + height / (pixelsPerUnit * 2 * Math.tan(12 * rad));
     const fraction = 1 - this.angle / 180;
-    this.mixer.setTime(Math.min(this.clip.duration - 0.00001, fraction * this.clip.duration));
+    // V68.usdz defines 121 keyframes (0..120 at 30fps = 4.0s). Blender's default 150-frame
+    // timeline pads frames 120..150, so map [180°..0°] to [0..4.0s] to match native SceneKit 1:1.
+    const foldDuration = Math.min(4.0, this.clip.duration);
+    this.mixer.setTime(Math.min(foldDuration - 0.00001, Math.max(0, fraction * foldDuration)));
     this.modelRoot.rotation.z = -90 * rad * fraction;
     this.offset.position.y = -0.04070 * fraction;
     this.rig.quaternion.copy(this.rotation);
@@ -209,7 +263,7 @@ export class DuoModel {
       x: 2 * (event.clientX - rect.left) / rect.width - 1,
       y: 1 - 2 * (event.clientY - rect.top) / rect.height
     }, this.camera);
-    const display = this.panel.state.activeDisplay;
+    const display = this.display || this.panel.state.activeDisplay;
     const planes = display === 'inner' ? this.inner : this.outer;
     const intersection = this.ray.intersectObjects(planes, false)[0];
     if (!intersection?.uv) return null;

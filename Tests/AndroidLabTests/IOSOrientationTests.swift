@@ -10,6 +10,14 @@ final class IOSOrientationTests: XCTestCase {
         XCTAssertEqual(IOSDeviceOrientation.portraitUpsideDown.duoInnerQuarterTurns, 3)
     }
 
+    func testFullHingeSweepIsSlowEnoughForTheDisplaySwap() {
+        let full = IOSSimulatorRuntime.hingeSweepSeconds(from: 0, to: 180)
+        XCTAssertGreaterThanOrEqual(full, 2)
+        XCTAssertLessThanOrEqual(full, 2.6)
+        XCTAssertLessThan(IOSSimulatorRuntime.hingeSweepSeconds(from: 180, to: 90), full)
+        XCTAssertEqual(IOSSimulatorRuntime.hingeSweepSeconds(from: 10, to: 12), 0.55, accuracy: 0.001)
+    }
+
     func testDuoDisplayHysteresisDeadbandMatchesSafeAreaInfo() {
         XCTAssertEqual(DuoActiveDisplay.resolve(angleDegrees: 45, current: .inner), .outer)
         XCTAssertEqual(DuoActiveDisplay.resolve(angleDegrees: 50, current: .outer), .outer)

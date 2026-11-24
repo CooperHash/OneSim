@@ -453,9 +453,9 @@ final class IOSSimulatorRuntime: ObservableObject {
             screenView?.preferDuoPanel(isInner: request.display == .inner)
         }
         if !request.interactive, abs(from - request.angle) > 2 {
-            let duration = String(format: "%.2f", max(0.18, min(0.38, Double(abs(from - request.angle)) / 420)))
+            let duration = String(format: "%.2f", Self.hingeSweepSeconds(from: from, to: request.angle))
             let result = try await Shell.run(
-                script, ["-d", udid, "sweep", String(from), String(request.angle), duration], timeout: 8
+                script, ["-d", udid, "sweep", String(from), String(request.angle), duration], timeout: 12
             )
             guard result.ok else { throw IOSSimulatorError.message(result.combined) }
             lastCommandedHingeAngle = request.angle
@@ -477,7 +477,25 @@ final class IOSSimulatorRuntime: ObservableObject {
         _ = try await waitForDuoPanel(request.display, udid: udid)
     }
 
+    /// SpringBoard abandons a display swap when the hinge moves faster than
+    /// about 120°/s. The target panel then stays dark and never becomes active.
+    /// A full 180° fold therefore takes two seconds.
+    nonisolated static func hingeSweepSeconds(from: Int, to: Int) -> Double {
+        let span = abs(to - from)
+        return min(2.6, max(0.55, Double(span) / 90))
+    }
+
     private func setHingeAngle(_ angle: Int, script: String, udid: String, interactive: Bool = false) async throws {
+        let from = lastCommandedHingeAngle
+        if !interactive, abs(from - angle) > 2 {
+            let duration = String(format: "%.2f", Self.hingeSweepSeconds(from: from, to: angle))
+            let result = try await Shell.run(
+                script, ["-d", udid, "sweep", String(from), String(angle), duration], timeout: 12
+            )
+            guard result.ok else { throw IOSSimulatorError.message(result.combined) }
+            lastCommandedHingeAngle = angle
+            return
+        }
         let result = try await Shell.run(
             script, ["-d", udid, "-t", interactive ? "0" : "0.6", "set", String(angle)], timeout: 8
         )
@@ -486,7 +504,9 @@ final class IOSSimulatorRuntime: ObservableObject {
     }
 
     private func waitForDuoPanel(_ display: DuoActiveDisplay, udid: String) async throws -> Bool {
-        let deadline = ContinuousClock.now + .seconds(4)
+        // The active flag moves first. On a cold swap the backlight can stay off
+        // for several seconds after that, so a short wait reports a false failure.
+        let deadline = ContinuousClock.now + .seconds(7)
         while !Task.isCancelled, pendingHingeRequest == nil {
             if let panel = await Self.readDuoPanel(udid: udid), !Task.isCancelled {
                 confirmedDuoPanel = panel

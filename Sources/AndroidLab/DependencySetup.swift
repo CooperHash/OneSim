@@ -125,18 +125,26 @@ struct DependencySetup {
         }
     }
 
+    /// Google serves these archives with `Content-Encoding: gzip` when the client
+    /// accepts it. A byte range of that gzip stream is not a valid gzip member, so
+    /// URLSession fails with "cannot decode raw data". Ask for the raw archive.
+    static func archiveRequest(for package: Package, bytes begin: Int64? = nil, end: Int64? = nil) -> URLRequest {
+        var request = URLRequest(url: package.archive)
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 90
+        if let begin, let end {
+            request.setValue("bytes=\(begin)-\(end)", forHTTPHeaderField: "Range")
+        }
+        return request
+    }
+
     private static func fetch(_ package: Package, staging: URL,
                               progress: @escaping @Sendable (Int64) -> Void) async throws -> [URL] {
-        let fm = FileManager.default
         let archive = staging.appendingPathComponent("package.zip")
         if package.bytes < 512_000_000 {
-            let (file, response) = try await URLSession.shared.download(
-                from: package.archive, delegate: DownloadProgress(progress)
-            )
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw SetupError("Google could not provide \(package.name).")
-            }
-            try fm.moveItem(at: file, to: archive)
+            let response = try await transfer(archiveRequest(for: package), to: archive, progress: progress)
+            try validate(response, package: package, file: archive)
             return [archive]
         }
 
@@ -148,21 +156,17 @@ struct DependencySetup {
                 group.addTask {
                     let begin = Int64(index) * partSize
                     let end = min(package.bytes - 1, begin + partSize - 1)
-                    var request = URLRequest(url: package.archive)
-                    request.setValue("bytes=\(begin)-\(end)", forHTTPHeaderField: "Range")
-                    request.cachePolicy = .reloadIgnoringLocalCacheData
-                    request.timeoutInterval = 90
-                    let delegate = DownloadProgress { bytes in counter.update(index, bytes: bytes) }
+                    let part = staging.appendingPathComponent("part-\(index)")
+                    let request = archiveRequest(for: package, bytes: begin, end: end)
                     for attempt in 1...3 {
                         do {
-                            let (file, response) = try await URLSession.shared.download(for: request, delegate: delegate)
-                            guard let http = response as? HTTPURLResponse, http.statusCode == 206,
-                                  http.value(forHTTPHeaderField: "Content-Range") == "bytes \(begin)-\(end)/\(package.bytes)" else {
-                                throw SetupError("Google returned an invalid byte range for \(package.name).")
+                            let response = try await transfer(request, to: part) { bytes in
+                                counter.update(index, bytes: bytes)
                             }
-                            try FileManager.default.moveItem(at: file, to: staging.appendingPathComponent("part-\(index)"))
+                            try validate(response, package: package, file: part, range: (begin, end))
                             break
                         } catch let error as URLError where attempt < 3 && error.code != .cancelled {
+                            try? FileManager.default.removeItem(at: part)
                             try await Task.sleep(for: .seconds(attempt))
                         }
                     }
@@ -171,6 +175,32 @@ struct DependencySetup {
             try await group.waitForAll()
         }
         return (0..<partCount).map { staging.appendingPathComponent("part-\($0)") }
+    }
+
+    private static func validate(_ response: HTTPURLResponse, package: Package, file: URL,
+                                 range: (begin: Int64, end: Int64)? = nil) throws {
+        if let encoding = response.value(forHTTPHeaderField: "Content-Encoding"),
+           encoding.caseInsensitiveCompare("identity") != .orderedSame {
+            throw SetupError("Google compressed \(package.name) instead of sending the archive.")
+        }
+        let count = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? -1
+        if let range {
+            guard response.statusCode == 206,
+                  response.value(forHTTPHeaderField: "Content-Range") == "bytes \(range.begin)-\(range.end)/\(package.bytes)",
+                  count == range.end - range.begin + 1 else {
+                throw SetupError("Google returned an invalid byte range for \(package.name).")
+            }
+        } else {
+            guard response.statusCode == 200, count == package.bytes else {
+                throw SetupError("Google could not provide \(package.name).")
+            }
+        }
+    }
+
+    private static func transfer(_ request: URLRequest, to destination: URL,
+                                 progress: @escaping @Sendable (Int64) -> Void) async throws -> HTTPURLResponse {
+        let download = FileDownload(destination: destination, progress: progress)
+        return try await download.start(request)
     }
 
     private final class ByteCounter: @unchecked Sendable {
@@ -221,18 +251,79 @@ struct DependencySetup {
         return archive
     }
 
-    private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, Sendable {
-        let update: @Sendable (Int64) -> Void
-        init(_ update: @escaping @Sendable (Int64) -> Void) { self.update = update }
+    /// The async `URLSession.download(for:delegate:)` API does not deliver
+    /// `didWriteData` callbacks, so the setup sheet stayed at 0%.
+    private final class FileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        private let destination: URL
+        private let progress: @Sendable (Int64) -> Void
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<HTTPURLResponse, Error>?
+        private var response: HTTPURLResponse?
+        private var moveError: Error?
+        private var session: URLSession!
+
+        init(destination: URL, progress: @escaping @Sendable (Int64) -> Void) {
+            self.destination = destination
+            self.progress = progress
+            super.init()
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.timeoutIntervalForRequest = 90
+            configuration.timeoutIntervalForResource = 30 * 60
+            session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        }
+
+        func start(_ request: URLRequest) async throws -> HTTPURLResponse {
+            let task = session.downloadTask(with: request)
+            progress(0)
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    lock.lock()
+                    self.continuation = continuation
+                    lock.unlock()
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
+            }
+        }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                         didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                         totalBytesExpectedToWrite: Int64) {
-            update(totalBytesWritten)
+            progress(totalBytesWritten)
         }
 
         func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                        didFinishDownloadingTo location: URL) {}
+                        didFinishDownloadingTo location: URL) {
+            do {
+                let fm = FileManager.default
+                if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+                try fm.moveItem(at: location, to: destination)
+                response = downloadTask.response as? HTTPURLResponse
+            } catch {
+                moveError = error
+            }
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            let result: Result<HTTPURLResponse, Error>
+            if let error {
+                result = .failure(error)
+            } else if let moveError {
+                result = .failure(moveError)
+            } else if let response {
+                result = .success(response)
+            } else {
+                result = .failure(SetupError("The download finished without a response."))
+            }
+            lock.lock()
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(with: result)
+            session.finishTasksAndInvalidate()
+        }
     }
 }
 

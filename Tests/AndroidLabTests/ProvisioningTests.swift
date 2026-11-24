@@ -106,6 +106,18 @@ final class ProvisioningTests: XCTestCase {
         XCTAssertEqual(XcodeToolchain.xcode(at: bundle.path), fullXcode)
     }
 
+    func testAndroidArchiveRequestDisablesCompression() throws {
+        let image = try XCTUnwrap(DependencySetup.packages.first { $0.bytes >= 512_000_000 })
+        let full = DependencySetup.archiveRequest(for: image)
+        XCTAssertEqual(full.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
+        XCTAssertNil(full.value(forHTTPHeaderField: "Range"))
+
+        let end = min(image.bytes - 1, 1023)
+        let part = DependencySetup.archiveRequest(for: image, bytes: 0, end: end)
+        XCTAssertEqual(part.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
+        XCTAssertEqual(part.value(forHTTPHeaderField: "Range"), "bytes=0-\(end)")
+    }
+
     func testSetupAcceptsInstalledPlayStoreARM64AndPrefersTheDefaultImageWhenAvailable() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
